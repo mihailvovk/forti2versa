@@ -11,6 +11,12 @@ dist/
 !testdata/*.cfg
 !testdata/*_report.txt
 
+# FortiGate configs (never commit customer/test firewall configs)
+*.conf
+testdata/source-*
+testdata/golden_*
+testdata/actual_*
+
 # IDE
 .idea/
 .vscode/
