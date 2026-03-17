@@ -18,8 +18,10 @@ type VersaConverter struct {
 	policyName string
 	zoneMap    map[string]string
 	skipOrphans bool
-	scheduleMap map[string]string
-	secProfileMap map[string]map[string]string
+	scheduleMap    map[string]string
+	secProfileMap  map[string]map[string]string
+	egressNetwork  string
+	egressVRF      string
 
 	output []string
 
@@ -57,6 +59,8 @@ func NewVersaConverter(parser *FortiGateParser, config *Config) *VersaConverter 
 		skipOrphans:       config.SkipOrphans,
 		scheduleMap:       config.ScheduleMap,
 		secProfileMap:     config.SecurityProfileMap,
+		egressNetwork:     config.EgressNetwork,
+		egressVRF:         config.EgressVRF,
 		versaServices:     make(map[string][]string),
 		rangeGroups:       make(map[string]string),
 		emittedSchedules:  make(map[string]bool),
@@ -204,6 +208,7 @@ func (c *VersaConverter) Convert() string {
 	c.convertServices()
 	c.convertSchedules()
 	c.convertURLFilteringProfiles()
+	c.convertURLFilteringSettings()
 	c.convertPolicies()
 	c.convertDecryptionPolicies()
 	return strings.Join(c.output, "\n")
@@ -355,14 +360,16 @@ func (c *VersaConverter) convertURLFilteringProfiles() {
 		c.urlFilterProfiles[pol.WebfilterProfile] = profileName
 
 		pp := c.urlFilterProfilePrefix(profileName)
-		c.output = append(c.output, pp+" cloud-lookup disabled")
+		c.output = append(c.output, pp+" cloud-lookup enabled")
 		c.output = append(c.output, pp+" decrypt-bypass false")
+		c.output = append(c.output, pp+" default-action predefined allow")
 
 		// Blacklist section
 		if len(blacklistPatterns) > 0 {
 			c.output = append(c.output, fmt.Sprintf("%s blacklist patterns [ %s ]", pp, strings.Join(blacklistPatterns, " ")))
 		}
 		c.output = append(c.output, pp+" blacklist evaluate-referrer true")
+		c.output = append(c.output, pp+" blacklist action predefined block")
 
 		// Whitelist section (includes monitor patterns merged in)
 		if len(whitelistPatterns) > 0 {
@@ -393,8 +400,15 @@ func (c *VersaConverter) convertURLFilteringProfiles() {
 			}
 			c.output = append(c.output, fmt.Sprintf("%s category-action-map category-action %s url-categories predefined [ %s ]",
 				pp, actionName, strings.Join(monitorCats, " ")))
-			c.output = append(c.output, fmt.Sprintf("%s category-action-map category-action %s action predefined monitor",
+			c.output = append(c.output, fmt.Sprintf("%s category-action-map category-action %s action predefined allow",
 				pp, actionName))
+		}
+
+		// Reputation-action-map: if any policy using this webfilter also has an
+		// application-list that blocks category 6 (High-Risk), add URL reputation blocking.
+		if c.appListBlocksHighRisk(pol.WebfilterProfile) {
+			c.output = append(c.output, fmt.Sprintf("%s reputation-action-map reputation-action reputation url-reputations predefined [ high_risk ]", pp))
+			c.output = append(c.output, fmt.Sprintf("%s reputation-action-map reputation-action reputation action predefined block", pp))
 		}
 
 		c.Report.AddConverted(fmt.Sprintf("url-filtering-profile \"%s\" -> %s (%d block, %d monitor categories)",
@@ -428,9 +442,11 @@ func (c *VersaConverter) convertURLFilteringProfiles() {
 		c.urlFilterProfiles[pol.DNSFilterProfile] = profileName
 
 		pp := c.urlFilterProfilePrefix(profileName)
-		c.output = append(c.output, pp+" cloud-lookup disabled")
+		c.output = append(c.output, pp+" cloud-lookup enabled")
 		c.output = append(c.output, pp+" decrypt-bypass false")
+		c.output = append(c.output, pp+" default-action predefined allow")
 		c.output = append(c.output, pp+" blacklist evaluate-referrer true")
+		c.output = append(c.output, pp+" blacklist action predefined block")
 		c.output = append(c.output, pp+" whitelist log-enable false")
 		c.output = append(c.output, pp+" whitelist evaluate-referrer true")
 
@@ -446,6 +462,72 @@ func (c *VersaConverter) convertURLFilteringProfiles() {
 		c.Report.AddConverted(fmt.Sprintf("url-filtering-profile \"%s\" (from DNS filter, %d block categories)", profileName, len(blockCats)))
 		c.Report.AddInfo(fmt.Sprintf("DNS filter \"%s\" -> URL filtering profile \"%s\" (no webfilter-profile on policy)", pol.DNSFilterProfile, profileName))
 	}
+}
+
+// appListBlocksHighRisk checks if any policy using the given webfilter profile
+// also has an application-list that blocks category 6 (High-Risk Applications).
+func (c *VersaConverter) appListBlocksHighRisk(webfilterProfile string) bool {
+	for _, pol := range c.parser.Policies {
+		if pol.WebfilterProfile != webfilterProfile || pol.ApplicationList == "" {
+			continue
+		}
+		appProf, ok := c.parser.AppListProfiles[pol.ApplicationList]
+		if !ok {
+			continue
+		}
+		for _, entry := range appProf.Entries {
+			if entry.Action == "block" {
+				for _, cat := range entry.Category {
+					if cat == 6 {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+// convertURLFilteringSettings emits global url-filtering settings and an SNAT pool
+// required for cloud-lookup to function. Only emits if custom URL filtering profiles exist.
+func (c *VersaConverter) convertURLFilteringSettings() {
+	if len(c.urlFilterProfiles) == 0 {
+		return
+	}
+
+	base := fmt.Sprintf("set devices template %s config orgs org-services %s", c.template, c.org)
+
+	// URL filtering settings
+	uf := base + " url-filtering settings"
+	c.output = append(c.output,
+		uf+" match-type http-host-uri",
+		uf+" logging url-parameter enabled",
+		uf+" logging max-url-length 255",
+		uf+" cloud-lookup state enabled",
+		uf+" cloud-lookup mode asynchronous",
+		uf+" cloud-lookup cloud-lookup-profile urlf-profile",
+		uf+" cloud-lookup cache-limit 100000",
+		uf+" cloud-lookup cache-time-to-live 300",
+		uf+" cloud-lookup timeout 1000",
+		uf+" spack url-category-database enabled",
+		uf+" history cache-history enabled",
+		uf+" history max-entries 64",
+	)
+
+	// SNAT pool (required for cloud-lookup internet access)
+	network := c.egressNetwork
+	if network == "" {
+		network = "INTERNET"
+	}
+	vrf := c.egressVRF
+	if vrf == "" {
+		vrf = "INTERNET-Transport-VR"
+	}
+	snat := base + " objects snat pool internet"
+	c.output = append(c.output,
+		fmt.Sprintf("%s egress-networks [ %s ]", snat, network),
+		fmt.Sprintf("%s routing-instance %s", snat, vrf),
+	)
 }
 
 // getURLFilterPatterns collects blacklist, whitelist, and monitor regex patterns from a webfilter's urlfilter-table.

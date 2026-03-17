@@ -9,6 +9,8 @@ type Config struct {
 	SkipOrphans        bool                         `json:"skip_orphans"`
 	ScheduleMap        map[string]string            `json:"schedule_map"`
 	SecurityProfileMap map[string]map[string]string `json:"security_profile_map"`
+	EgressNetwork      string                       `json:"egress_network"`
+	EgressVRF          string                       `json:"egress_vrf"`
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -17,7 +19,9 @@ func DefaultConfig() *Config {
 		TemplateName: "<TEMPLATE-NAME>",
 		OrgName:      "<ORG>",
 		PolicyName:   "Default-Policy",
-		SkipOrphans:  true,
+		SkipOrphans:   true,
+		EgressNetwork: "INTERNET",
+		EgressVRF:     "INTERNET-Transport-VR",
 	}
 }
 

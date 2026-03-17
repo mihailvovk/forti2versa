@@ -673,6 +673,10 @@ end
 	if !strings.Contains(out, "set lef event both") {
 		t.Error("missing LEF logging")
 	}
+	// blacklist action predefined block must follow blacklist evaluate-referrer true
+	if !strings.Contains(out, "blacklist action predefined block") {
+		t.Error("missing blacklist action predefined block")
+	}
 }
 
 func TestFortiURLToVersaRegex(t *testing.T) {
@@ -1029,5 +1033,330 @@ end
 		if strings.Contains(line, "decrypt-Cert-Only-Test") && strings.Contains(line, "predefined-services-list") && strings.Contains(line, "ftps") {
 			t.Error("ftps should not be in decrypt services (certificate-inspection only)")
 		}
+	}
+}
+
+func TestURLFilterMonitorActionAllow(t *testing.T) {
+	text := `
+config webfilter profile
+    edit "wf-monitor"
+        config ftgd-wf
+            config filters
+                edit 1
+                    set category 2
+                    set action monitor
+                next
+            end
+        end
+    next
+end
+config firewall policy
+    edit 1
+        set name "Mon-Test"
+        set srcintf "port1"
+        set dstintf "wan1"
+        set srcaddr "all"
+        set dstaddr "all"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+        set webfilter-profile "wf-monitor"
+    next
+end
+`
+	p := NewFortiGateParser(text)
+	cfg := newTestConfig()
+	c := NewVersaConverter(p, cfg)
+	out := c.Convert()
+
+	// Monitor categories should use "action predefined allow", not "monitor"
+	if !strings.Contains(out, "action predefined allow") {
+		t.Error("monitor categories should use action predefined allow")
+	}
+	if strings.Contains(out, "action predefined monitor") {
+		t.Error("should not use action predefined monitor — Versa uses allow for monitored categories")
+	}
+}
+
+func TestURLFilterReputationActionMap(t *testing.T) {
+	text := `
+config application list
+    edit "app-block-highrisk"
+        config entries
+            edit 1
+                set category 6
+                set action block
+            next
+        end
+    next
+end
+config webfilter profile
+    edit "wf-strict"
+        config ftgd-wf
+            config filters
+                edit 1
+                    set category 2
+                    set action block
+                next
+            end
+        end
+    next
+end
+config firewall policy
+    edit 1
+        set name "Strict-Test"
+        set srcintf "port1"
+        set dstintf "wan1"
+        set srcaddr "all"
+        set dstaddr "all"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+        set webfilter-profile "wf-strict"
+        set application-list "app-block-highrisk"
+    next
+end
+`
+	p := NewFortiGateParser(text)
+	cfg := newTestConfig()
+	c := NewVersaConverter(p, cfg)
+	out := c.Convert()
+
+	// Should have reputation-action-map with high_risk block
+	if !strings.Contains(out, "reputation-action-map reputation-action reputation url-reputations predefined [ high_risk ]") {
+		t.Error("missing reputation-action-map high_risk line")
+	}
+	if !strings.Contains(out, "reputation-action-map reputation-action reputation action predefined block") {
+		t.Error("missing reputation-action-map block action")
+	}
+}
+
+func TestURLFilterCloudLookupEnabled(t *testing.T) {
+	text := `
+config webfilter profile
+    edit "wf-test"
+        config ftgd-wf
+            config filters
+                edit 1
+                    set category 2
+                    set action block
+                next
+            end
+        end
+    next
+end
+config firewall policy
+    edit 1
+        set name "CloudLookup-Test"
+        set srcintf "port1"
+        set dstintf "wan1"
+        set srcaddr "all"
+        set dstaddr "all"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+        set webfilter-profile "wf-test"
+    next
+end
+`
+	p := NewFortiGateParser(text)
+	cfg := newTestConfig()
+	c := NewVersaConverter(p, cfg)
+	out := c.Convert()
+
+	// Per-profile: cloud-lookup enabled + default-action predefined allow
+	if !strings.Contains(out, "url-filtering-profile wf-test cloud-lookup enabled") {
+		t.Error("missing cloud-lookup enabled in URL filtering profile")
+	}
+	if !strings.Contains(out, "url-filtering-profile wf-test default-action predefined allow") {
+		t.Error("missing default-action predefined allow in URL filtering profile")
+	}
+	// Should NOT have cloud-lookup disabled
+	if strings.Contains(out, "cloud-lookup disabled") {
+		t.Error("should not have cloud-lookup disabled")
+	}
+}
+
+func TestURLFilteringSettings(t *testing.T) {
+	text := `
+config webfilter profile
+    edit "wf-settings"
+        config ftgd-wf
+            config filters
+                edit 1
+                    set category 2
+                    set action block
+                next
+            end
+        end
+    next
+end
+config firewall policy
+    edit 1
+        set name "Settings-Test"
+        set srcintf "port1"
+        set dstintf "wan1"
+        set srcaddr "all"
+        set dstaddr "all"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+        set webfilter-profile "wf-settings"
+    next
+end
+`
+	p := NewFortiGateParser(text)
+	cfg := newTestConfig()
+	cfg.EgressNetwork = "MY-NET"
+	cfg.EgressVRF = "MY-VR"
+	c := NewVersaConverter(p, cfg)
+	out := c.Convert()
+
+	// Global url-filtering settings block
+	if !strings.Contains(out, "url-filtering settings match-type http-host-uri") {
+		t.Error("missing url-filtering settings match-type")
+	}
+	if !strings.Contains(out, "url-filtering settings cloud-lookup state enabled") {
+		t.Error("missing url-filtering settings cloud-lookup state enabled")
+	}
+	if !strings.Contains(out, "url-filtering settings cloud-lookup mode asynchronous") {
+		t.Error("missing url-filtering settings cloud-lookup mode")
+	}
+	if !strings.Contains(out, "url-filtering settings cloud-lookup cache-limit 100000") {
+		t.Error("missing url-filtering settings cache-limit")
+	}
+	if !strings.Contains(out, "url-filtering settings spack url-category-database enabled") {
+		t.Error("missing url-filtering settings spack")
+	}
+	if !strings.Contains(out, "url-filtering settings history cache-history enabled") {
+		t.Error("missing url-filtering settings history")
+	}
+
+	// SNAT pool with custom config values
+	if !strings.Contains(out, "snat pool internet egress-networks [ MY-NET ]") {
+		t.Error("missing SNAT pool egress-networks with custom network")
+	}
+	if !strings.Contains(out, "snat pool internet routing-instance MY-VR") {
+		t.Error("missing SNAT pool routing-instance with custom VRF")
+	}
+}
+
+func TestURLFilteringSettingsDefaults(t *testing.T) {
+	text := `
+config webfilter profile
+    edit "wf-def"
+        config ftgd-wf
+            config filters
+                edit 1
+                    set category 2
+                    set action block
+                next
+            end
+        end
+    next
+end
+config firewall policy
+    edit 1
+        set name "Default-Test"
+        set srcintf "port1"
+        set dstintf "wan1"
+        set srcaddr "all"
+        set dstaddr "all"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+        set webfilter-profile "wf-def"
+    next
+end
+`
+	p := NewFortiGateParser(text)
+	cfg := newTestConfig()
+	// EgressNetwork and EgressVRF not set — should use defaults
+	c := NewVersaConverter(p, cfg)
+	out := c.Convert()
+
+	if !strings.Contains(out, "snat pool internet egress-networks [ INTERNET ]") {
+		t.Error("missing SNAT pool with default INTERNET network")
+	}
+	if !strings.Contains(out, "snat pool internet routing-instance INTERNET-Transport-VR") {
+		t.Error("missing SNAT pool with default INTERNET-Transport-VR")
+	}
+}
+
+func TestURLFilteringSettingsNotEmittedWithoutProfiles(t *testing.T) {
+	text := `
+config firewall policy
+    edit 1
+        set name "No-WF-Test"
+        set srcintf "port1"
+        set dstintf "wan1"
+        set srcaddr "all"
+        set dstaddr "all"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+    next
+end
+`
+	p := NewFortiGateParser(text)
+	cfg := newTestConfig()
+	c := NewVersaConverter(p, cfg)
+	out := c.Convert()
+
+	if strings.Contains(out, "url-filtering settings") {
+		t.Error("url-filtering settings should not appear when no URL filtering profiles exist")
+	}
+	if strings.Contains(out, "snat pool internet") {
+		t.Error("SNAT pool should not appear when no URL filtering profiles exist")
+	}
+}
+
+func TestURLFilterNoReputationWithoutHighRisk(t *testing.T) {
+	text := `
+config application list
+    edit "app-allow"
+        config entries
+            edit 1
+                set category 6
+                set action pass
+            next
+        end
+    next
+end
+config webfilter profile
+    edit "wf-normal"
+        config ftgd-wf
+            config filters
+                edit 1
+                    set category 2
+                    set action block
+                next
+            end
+        end
+    next
+end
+config firewall policy
+    edit 1
+        set name "Normal-Test"
+        set srcintf "port1"
+        set dstintf "wan1"
+        set srcaddr "all"
+        set dstaddr "all"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+        set webfilter-profile "wf-normal"
+        set application-list "app-allow"
+    next
+end
+`
+	p := NewFortiGateParser(text)
+	cfg := newTestConfig()
+	c := NewVersaConverter(p, cfg)
+	out := c.Convert()
+
+	// Should NOT have reputation-action-map (app-list doesn't block cat 6)
+	if strings.Contains(out, "reputation-action-map") {
+		t.Error("reputation-action-map should not appear when app-list does not block category 6")
 	}
 }
