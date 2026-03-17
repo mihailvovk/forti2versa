@@ -1144,13 +1144,18 @@ func (c *VersaConverter) convertDecryptionPolicies() {
 	c.Report.AddWarning("Decrypt profile uses template variables for certificate/ca-chain — provision in Versa Director")
 
 	// Report dropped ssl-exempt-categories (Versa inspects SNI/headers without decrypting)
+	var exemptProfiles []string
 	for profName, prof := range c.parser.SSLSSHProfiles {
 		if !deepProfiles[profName] {
 			continue
 		}
 		if len(prof.ExemptCats) > 0 || len(prof.Exemptions) > 0 {
-			c.Report.AddWarning(fmt.Sprintf("SSL profile \"%s\": ssl-exempt-categories/ssl-exempt dropped — Versa inspects SNI/headers without decrypting", profName))
+			exemptProfiles = append(exemptProfiles, profName)
 		}
+	}
+	sort.Strings(exemptProfiles)
+	for _, profName := range exemptProfiles {
+		c.Report.AddWarning(fmt.Sprintf("SSL profile \"%s\": ssl-exempt-categories/ssl-exempt dropped — Versa inspects SNI/headers without decrypting", profName))
 	}
 
 	// Consolidate decrypt rules by zone pair — Versa uses one broad rule per zone pair
