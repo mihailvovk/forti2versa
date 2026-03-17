@@ -69,10 +69,27 @@ type SSLExemption struct {
 	WildcardFQDN       string // reference to wildcard-fqdn object name
 }
 
+type SSLProtocol struct {
+	Name   string // "https", "ftps", "imaps", "smtps", "pop3s"
+	Ports  []int  // e.g. [443], [990], [993]
+	Status string // "deep-inspection", "certificate-inspection"
+}
+
 type SSLSSHProfile struct {
 	Name       string
+	Protocols  []SSLProtocol  // parsed from config https/ftps/imaps/etc sub-blocks
 	ExemptCats []int          // from "set ssl-exempt-categories"
 	Exemptions []SSLExemption // from "config ssl-exempt" block
+}
+
+type DNSFilterCategory struct {
+	ID     int
+	Action string // "block", "monitor", "allow"
+}
+
+type DNSFilterObj struct {
+	Name       string
+	Categories []DNSFilterCategory
 }
 
 type URLFilterEntry struct {
@@ -91,6 +108,12 @@ type OnetimeSchedule struct {
 	Name  string
 	Start string // "00:01 2019/10/11"
 	End   string // "23:59 2019/10/28"
+}
+
+// AVProfile represents a FortiGate antivirus profile with enabled protocol sub-blocks.
+type AVProfile struct {
+	Name      string
+	Protocols []string // "http", "ftp", "smtp", "imap", "pop3"
 }
 
 type PolicyObj struct {

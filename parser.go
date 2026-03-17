@@ -16,13 +16,15 @@ type FortiGateParser struct {
 	SvcGroups   map[string]*SvcGroup
 	SGrpOrder   []string
 	Policies    []*PolicyObj
-	WebfilterProfiles map[string]*WebfilterProfile
-	AppListProfiles   map[string]*AppListProfile
-	WildcardFQDNs     map[string]*WildcardFQDN
-	WFQDNOrder        []string
-	SSLSSHProfiles    map[string]*SSLSSHProfile
-	URLFilters        map[int]*URLFilterTable
-	OnetimeSchedules  map[string]*OnetimeSchedule
+	WebfilterProfiles  map[string]*WebfilterProfile
+	AppListProfiles    map[string]*AppListProfile
+	WildcardFQDNs      map[string]*WildcardFQDN
+	WFQDNOrder         []string
+	SSLSSHProfiles     map[string]*SSLSSHProfile
+	URLFilters         map[int]*URLFilterTable
+	OnetimeSchedules   map[string]*OnetimeSchedule
+	AVProfiles         map[string]*AVProfile
+	DNSFilterProfiles  map[string]*DNSFilterObj
 }
 
 func NewFortiGateParser(text string) *FortiGateParser {
@@ -37,6 +39,8 @@ func NewFortiGateParser(text string) *FortiGateParser {
 		SSLSSHProfiles:    make(map[string]*SSLSSHProfile),
 		URLFilters:        make(map[int]*URLFilterTable),
 		OnetimeSchedules:  make(map[string]*OnetimeSchedule),
+		AVProfiles:        make(map[string]*AVProfile),
+		DNSFilterProfiles: make(map[string]*DNSFilterObj),
 	}
 	p.parse(text)
 	return p
@@ -126,6 +130,10 @@ func (p *FortiGateParser) parse(text string) {
 			i = p.parseURLFilterBlock(lines, i+1)
 		case line == "config firewall schedule onetime":
 			i = p.parseOnetimeScheduleBlock(lines, i+1)
+		case line == "config antivirus profile":
+			i = p.parseAVProfileBlock(lines, i+1)
+		case line == "config dnsfilter profile":
+			i = p.parseDNSFilterProfileBlock(lines, i+1)
 		case line == "config firewall policy":
 			i = p.parsePolicyBlock(lines, i+1)
 		default:
@@ -873,6 +881,7 @@ func (p *FortiGateParser) parseSSLSSHProfileBlock(lines []string, start int) int
 	var obj *SSLSSHProfile
 	inSSLExempt := false
 	var exemption *SSLExemption
+	var currentProto *SSLProtocol
 	for i < len(lines) && depth > 0 {
 		s := skipComment(lines[i])
 		if s == "" {
@@ -883,6 +892,10 @@ func (p *FortiGateParser) parseSSLSSHProfileBlock(lines []string, start int) int
 			if exemption != nil && obj != nil {
 				obj.Exemptions = append(obj.Exemptions, *exemption)
 				exemption = nil
+			}
+			if currentProto != nil && obj != nil {
+				obj.Protocols = append(obj.Protocols, *currentProto)
+				currentProto = nil
 			}
 			depth--
 			if depth == 1 {
@@ -899,8 +912,14 @@ func (p *FortiGateParser) parseSSLSSHProfileBlock(lines []string, start int) int
 		}
 		if strings.HasPrefix(s, "config ") {
 			depth++
-			if strings.Contains(s, "ssl-exempt") {
+			configName := strings.TrimSpace(strings.TrimPrefix(s, "config "))
+			if configName == "ssl-exempt" {
 				inSSLExempt = true
+			} else if depth == 2 && obj != nil {
+				switch configName {
+				case "https", "ftps", "imaps", "smtps", "pop3s":
+					currentProto = &SSLProtocol{Name: configName}
+				}
 			}
 			i++
 			continue
@@ -941,6 +960,15 @@ func (p *FortiGateParser) parseSSLSSHProfileBlock(lines []string, start int) int
 				key := parts[1]
 				vals := parseQuotedValues(parts[2])
 				switch {
+				case key == "ports" && currentProto != nil:
+					for _, v := range vals {
+						port, _ := strconv.Atoi(v)
+						if port > 0 {
+							currentProto.Ports = append(currentProto.Ports, port)
+						}
+					}
+				case key == "status" && currentProto != nil:
+					currentProto.Status = vals[0]
 				case key == "ssl-exempt-categories" && obj != nil:
 					for _, v := range vals {
 						id, _ := strconv.Atoi(v)
@@ -1053,6 +1081,65 @@ func (p *FortiGateParser) parseURLFilterBlock(lines []string, start int) int {
 	return i
 }
 
+// --- Antivirus Profiles ---
+
+func (p *FortiGateParser) parseAVProfileBlock(lines []string, start int) int {
+	i := start
+	depth := 1
+	var obj *AVProfile
+	for i < len(lines) && depth > 0 {
+		s := skipComment(lines[i])
+		if s == "" {
+			i++
+			continue
+		}
+		if s == "end" {
+			depth--
+			if depth == 0 {
+				if obj != nil {
+					p.AVProfiles[obj.Name] = obj
+				}
+				return i + 1
+			}
+			i++
+			continue
+		}
+		if strings.HasPrefix(s, "config ") {
+			depth++
+			// Protocol sub-blocks: "config http", "config ftp", "config smtp", "config imap", "config pop3"
+			if obj != nil && depth == 2 {
+				protoName := strings.TrimPrefix(s, "config ")
+				protoName = strings.TrimSpace(protoName)
+				switch protoName {
+				case "http", "ftp", "smtp", "imap", "pop3":
+					obj.Protocols = append(obj.Protocols, protoName)
+				}
+			}
+			i++
+			continue
+		}
+		if strings.HasPrefix(s, "edit ") && depth == 1 {
+			if obj != nil {
+				p.AVProfiles[obj.Name] = obj
+			}
+			name := parseQuotedValues(s[5:])[0]
+			obj = &AVProfile{Name: name}
+			i++
+			continue
+		}
+		if s == "next" && depth == 1 {
+			if obj != nil {
+				p.AVProfiles[obj.Name] = obj
+				obj = nil
+			}
+			i++
+			continue
+		}
+		i++
+	}
+	return i
+}
+
 // --- Onetime Schedules ---
 
 func (p *FortiGateParser) parseOnetimeScheduleBlock(lines []string, start int) int {
@@ -1108,6 +1195,94 @@ func (p *FortiGateParser) parseOnetimeScheduleBlock(lines []string, start int) i
 					obj.Start = strings.Trim(rest, `"`)
 				case "end":
 					obj.End = strings.Trim(rest, `"`)
+				}
+			}
+		}
+		i++
+	}
+	return i
+}
+
+// --- DNS Filter Profiles ---
+
+func (p *FortiGateParser) parseDNSFilterProfileBlock(lines []string, start int) int {
+	i := start
+	depth := 1
+	var obj *DNSFilterObj
+	inFilters := false
+	var catObj *DNSFilterCategory
+	for i < len(lines) && depth > 0 {
+		s := skipComment(lines[i])
+		if s == "" {
+			i++
+			continue
+		}
+		if s == "end" {
+			if catObj != nil && obj != nil {
+				obj.Categories = append(obj.Categories, *catObj)
+				catObj = nil
+			}
+			depth--
+			if depth == 2 {
+				inFilters = false
+			}
+			if depth == 0 {
+				if obj != nil {
+					p.DNSFilterProfiles[obj.Name] = obj
+				}
+				return i + 1
+			}
+			i++
+			continue
+		}
+		if strings.HasPrefix(s, "config ") {
+			depth++
+			if strings.Contains(s, "filters") && depth >= 3 {
+				inFilters = true
+			}
+			i++
+			continue
+		}
+		if strings.HasPrefix(s, "edit ") && depth == 1 {
+			if obj != nil {
+				p.DNSFilterProfiles[obj.Name] = obj
+			}
+			name := parseQuotedValues(s[5:])[0]
+			obj = &DNSFilterObj{Name: name}
+			i++
+			continue
+		}
+		if strings.HasPrefix(s, "edit ") && inFilters {
+			if catObj != nil && obj != nil {
+				obj.Categories = append(obj.Categories, *catObj)
+			}
+			catObj = &DNSFilterCategory{}
+			i++
+			continue
+		}
+		if s == "next" {
+			if inFilters && catObj != nil && obj != nil {
+				obj.Categories = append(obj.Categories, *catObj)
+				catObj = nil
+			} else if !inFilters && depth == 1 {
+				if obj != nil {
+					p.DNSFilterProfiles[obj.Name] = obj
+					obj = nil
+				}
+			}
+			i++
+			continue
+		}
+		if strings.HasPrefix(s, "set ") {
+			parts := splitN(s, 3)
+			if len(parts) >= 3 {
+				key := parts[1]
+				vals := parseQuotedValues(parts[2])
+				switch {
+				case key == "category" && catObj != nil:
+					catObj.ID, _ = strconv.Atoi(vals[0])
+				case key == "action" && catObj != nil:
+					catObj.Action = vals[0]
 				}
 			}
 		}

@@ -645,35 +645,33 @@ end
 		t.Errorf("missing or incorrect blacklist patterns in output")
 	}
 	// youtube is monitor, should NOT be in blacklist
-	if strings.Contains(out, `blacklist patterns`) && strings.Contains(out, `youtube`) {
-		// Check it's not in the main profile's blacklist
-		for _, line := range strings.Split(out, "\n") {
-			if strings.Contains(line, "blacklist patterns") && strings.Contains(line, "youtube") && !strings.Contains(line, "_url_monitor") {
-				t.Errorf("monitor entry youtube should not be in blacklist patterns")
-			}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "blacklist patterns") && strings.Contains(line, "youtube") {
+			t.Errorf("monitor entry youtube should not be in blacklist patterns")
 		}
 	}
-	// Should have whitelist patterns
-	if !strings.Contains(out, `whitelist patterns [ ".*\\.safe-site\\.com" ]`) {
-		t.Errorf("missing or incorrect whitelist patterns in output")
+	// Bug 1: Monitor patterns merged into main profile whitelist
+	if !strings.Contains(out, `whitelist patterns [ ".*\\.safe-site\\.com" ".*youtube\\.com" ]`) {
+		t.Errorf("missing merged whitelist patterns (exempt + monitor) in output")
 	}
 	// Should still have category block
 	if !strings.Contains(out, "religion") {
 		t.Error("missing category-action-map block")
 	}
-	// Should have monitor URL filtering profile with whitelist + logging
-	if !strings.Contains(out, "_url_monitor") {
-		t.Error("missing monitor URL filtering profile")
-	}
+	// Bug 1: Whitelist log-enable true (because monitor patterns exist)
 	if !strings.Contains(out, "whitelist log-enable true") {
-		t.Error("missing whitelist log-enable in monitor profile")
+		t.Error("missing whitelist log-enable true in main profile")
 	}
-	// Should have monitor access-policy rule
-	if !strings.Contains(out, "monitor-URL-Filter-Test") {
-		t.Error("missing monitor access-policy rule")
+	// Bug 1: No separate _url_monitor profile
+	if strings.Contains(out, "_url_monitor") {
+		t.Error("_url_monitor profile should not exist — monitor patterns merged into main profile")
+	}
+	// Bug 1: No separate monitor-* access-policy rule
+	if strings.Contains(out, "monitor-URL-Filter-Test") {
+		t.Error("monitor-URL-Filter-Test rule should not exist — monitor patterns merged into main profile")
 	}
 	if !strings.Contains(out, "set lef event both") {
-		t.Error("missing LEF logging in monitor rule")
+		t.Error("missing LEF logging")
 	}
 }
 
@@ -755,5 +753,281 @@ end
 	}
 	if !strings.Contains(report, "Versa QoS uses Class of Service") {
 		t.Error("missing QoS warning text")
+	}
+}
+
+func TestConvertAppBlockRule(t *testing.T) {
+	text := `
+config application list
+    edit "Block_P2P"
+        config entries
+            edit 1
+                set category 8
+                set action block
+            next
+            edit 2
+                set application 16354
+                set action block
+            next
+        end
+    next
+end
+config firewall policy
+    edit 1
+        set name "App-Block-Test"
+        set srcintf "port1"
+        set dstintf "wan1"
+        set srcaddr "all"
+        set dstaddr "all"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+        set logtraffic all
+        set application-list "Block_P2P"
+    next
+end
+`
+	p := NewFortiGateParser(text)
+	c := NewVersaConverter(p, newTestConfig())
+	out := c.Convert()
+
+	// Bug 2: Should have appblock deny pre-rule
+	if !strings.Contains(out, "appblock-App-Block-Test") {
+		t.Error("missing appblock deny pre-rule")
+	}
+	if !strings.Contains(out, "appblock-App-Block-Test set action deny") {
+		t.Error("appblock rule should have deny action")
+	}
+	if !strings.Contains(out, "appblock-App-Block-Test set set-type public") {
+		t.Error("appblock rule should have set-type public")
+	}
+	// appblock should have app matching
+	found := false
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "appblock-App-Block-Test") && strings.Contains(line, "match application") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("appblock rule should have match application")
+	}
+	// Main rule should NOT have match application
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "access-policy App-Block-Test") && !strings.Contains(line, "appblock-") && strings.Contains(line, "match application") {
+			t.Error("main allow rule should NOT have match application")
+		}
+	}
+	// appblock rule should come BEFORE main rule
+	appblockIdx := strings.Index(out, "appblock-App-Block-Test")
+	mainIdx := strings.Index(out, "access-policy App-Block-Test rule-disable")
+	if appblockIdx > mainIdx {
+		t.Error("appblock rule should come before main rule")
+	}
+}
+
+func TestConvertDNSFilterMerge(t *testing.T) {
+	text := `
+config dnsfilter profile
+    edit "DNS_Block"
+        config ftgd-dns
+            config filters
+                edit 1
+                    set category 26
+                    set action block
+                next
+                edit 2
+                    set category 72
+                    set action block
+                next
+            end
+        end
+    next
+end
+config webfilter profile
+    edit "WF_Test"
+        config ftgd-wf
+            config filters
+                edit 1
+                    set category 2
+                    set action block
+                next
+            end
+        end
+    next
+end
+config firewall policy
+    edit 1
+        set name "DNS-Merge-Test"
+        set srcintf "port1"
+        set dstintf "wan1"
+        set srcaddr "all"
+        set dstaddr "all"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+        set logtraffic all
+        set webfilter-profile "WF_Test"
+        set dnsfilter-profile "DNS_Block"
+    next
+end
+`
+	p := NewFortiGateParser(text)
+	c := NewVersaConverter(p, newTestConfig())
+	out := c.Convert()
+
+	// Bug 3: No dns-filtering line in output
+	if strings.Contains(out, "dns-filtering") {
+		t.Error("should not have dns-filtering lines — merged into URL filtering")
+	}
+	// Should have URL filtering profile with DNS categories merged
+	if !strings.Contains(out, "url-filtering-profile WF_Test") {
+		t.Error("missing URL filtering profile")
+	}
+	// DNS cat 26 = malware_sites, cat 72 = peer_to_peer should be in block categories
+	if !strings.Contains(out, "malware_sites") {
+		t.Error("missing malware_sites from DNS filter merge")
+	}
+	if !strings.Contains(out, "peer_to_peer") {
+		t.Error("missing peer_to_peer from DNS filter merge")
+	}
+	// Check report mentions DNS merge
+	report := c.Report.Render()
+	if !strings.Contains(report, "DNS filter categories merged") {
+		t.Error("missing DNS merge report info")
+	}
+}
+
+func TestConvertDNSFilterOnly(t *testing.T) {
+	text := `
+config dnsfilter profile
+    edit "DNS_Only"
+        config ftgd-dns
+            config filters
+                edit 1
+                    set category 26
+                    set action block
+                next
+            end
+        end
+    next
+end
+config firewall policy
+    edit 1
+        set name "DNS-Only-Test"
+        set srcintf "port1"
+        set dstintf "wan1"
+        set srcaddr "all"
+        set dstaddr "all"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+        set logtraffic all
+        set dnsfilter-profile "DNS_Only"
+    next
+end
+`
+	p := NewFortiGateParser(text)
+	c := NewVersaConverter(p, newTestConfig())
+	out := c.Convert()
+
+	// Bug 3: Should create URL filtering profile from DNS filter categories
+	if !strings.Contains(out, "url-filtering-profile DNS_Only") {
+		t.Error("missing URL filtering profile from DNS-only policy")
+	}
+	if !strings.Contains(out, "malware_sites") {
+		t.Error("missing malware_sites in DNS-only URL filtering profile")
+	}
+	// Should attach the profile in the rule
+	if !strings.Contains(out, "url-filtering user-defined DNS_Only") {
+		t.Error("missing url-filtering user-defined in rule for DNS-only policy")
+	}
+}
+
+func TestConvertDecryptionWithProtocols(t *testing.T) {
+	text := `
+config firewall ssl-ssh-profile
+    edit "deep-inspection"
+        config https
+            set ports 443
+            set status deep-inspection
+        end
+        config ftps
+            set ports 990
+            set status deep-inspection
+        end
+        config imaps
+            set ports 993
+            set status deep-inspection
+        end
+    next
+end
+config firewall policy
+    edit 1
+        set name "Multi-Proto-Decrypt"
+        set srcintf "port1"
+        set dstintf "wan1"
+        set srcaddr "all"
+        set dstaddr "all"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+        set logtraffic all
+        set ssl-ssh-profile "deep-inspection"
+    next
+end
+`
+	p := NewFortiGateParser(text)
+	c := NewVersaConverter(p, newTestConfig())
+	out := c.Convert()
+
+	// Bug 4: Decrypt rule should have all 3 protocols
+	if !strings.Contains(out, "predefined-services-list [ https ftps imaps ]") {
+		t.Errorf("decrypt rule should have https ftps imaps services, got output:\n%s", out)
+	}
+}
+
+func TestConvertDecryptionCertInspectionExcluded(t *testing.T) {
+	text := `
+config firewall ssl-ssh-profile
+    edit "deep-inspection"
+        config https
+            set ports 443
+            set status deep-inspection
+        end
+        config ftps
+            set ports 990
+            set status certificate-inspection
+        end
+    next
+end
+config firewall policy
+    edit 1
+        set name "Cert-Only-Test"
+        set srcintf "port1"
+        set dstintf "wan1"
+        set srcaddr "all"
+        set dstaddr "all"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+        set logtraffic all
+        set ssl-ssh-profile "deep-inspection"
+    next
+end
+`
+	p := NewFortiGateParser(text)
+	c := NewVersaConverter(p, newTestConfig())
+	out := c.Convert()
+
+	// Bug 4: Only deep-inspection protocols should appear
+	if !strings.Contains(out, "predefined-services-list [ https ]") {
+		t.Errorf("decrypt rule should only have https (ftps is cert-inspection), got output:\n%s", out)
+	}
+	// ftps should NOT be in services (it's only certificate-inspection)
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "decrypt-Cert-Only-Test") && strings.Contains(line, "predefined-services-list") && strings.Contains(line, "ftps") {
+			t.Error("ftps should not be in decrypt services (certificate-inspection only)")
+		}
 	}
 }

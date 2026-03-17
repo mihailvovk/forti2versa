@@ -37,8 +37,6 @@ type VersaConverter struct {
 	referencedWFQDNs    map[string]bool
 	// Generated URL filtering profile names (FG webfilter name -> Versa profile name)
 	urlFilterProfiles map[string]string
-	// Generated URL monitor profile names (FG webfilter name -> Versa monitor profile name)
-	urlMonitorProfiles map[string]string
 	// Predefined service mappings (FG service name -> Versa predefined slug)
 	versaPredefined map[string]string
 	// Addresses that are 0.0.0.0/0 (match-all, omitted from output)
@@ -68,7 +66,6 @@ func NewVersaConverter(parser *FortiGateParser, config *Config) *VersaConverter 
 		referencedSvcGrps:  make(map[string]bool),
 		referencedWFQDNs:  make(map[string]bool),
 		urlFilterProfiles:  make(map[string]string),
-		urlMonitorProfiles: make(map[string]string),
 		versaPredefined:    make(map[string]string),
 		matchAllAddrs:      make(map[string]bool),
 		matchAllSvcs:       make(map[string]bool),
@@ -183,7 +180,6 @@ func (c *VersaConverter) validateProfileMap() {
 		"av-profile":       VersaAVProfiles,
 		"ips-sensor":       VersaIPSProfiles,
 		"webfilter-profile": VersaURLFilteringProfiles,
-		"dnsfilter-profile": VersaDNSFilteringProfiles,
 	}
 	for section, profiles := range c.secProfileMap {
 		valid, ok := validators[section]
@@ -261,6 +257,33 @@ func convertOnetimeTS(ts string) string {
 
 // --- URL Filtering Profiles ---
 func (c *VersaConverter) convertURLFilteringProfiles() {
+	// Pre-compute DNS filter blocked categories to merge into URL filtering profiles.
+	// Key: webfilter profile name -> set of Versa URL category slugs from DNS filter.
+	dnsExtraCats := make(map[string]map[string]bool)
+	for _, pol := range c.parser.Policies {
+		if pol.DNSFilterProfile == "" {
+			continue
+		}
+		dnsProf, ok := c.parser.DNSFilterProfiles[pol.DNSFilterProfile]
+		if !ok {
+			continue
+		}
+		target := pol.WebfilterProfile
+		if target == "" {
+			target = "__dns_only__" + pol.DNSFilterProfile
+		}
+		if dnsExtraCats[target] == nil {
+			dnsExtraCats[target] = make(map[string]bool)
+		}
+		for _, cat := range dnsProf.Categories {
+			if cat.Action == "block" {
+				if versaSlug, ok := FGCategoryToVersa[cat.ID]; ok {
+					dnsExtraCats[target][versaSlug] = true
+				}
+			}
+		}
+	}
+
 	// Collect unique webfilter profiles referenced by policies
 	seen := make(map[string]bool)
 	for _, pol := range c.parser.Policies {
@@ -295,9 +318,30 @@ func (c *VersaConverter) convertURLFilteringProfiles() {
 			}
 		}
 
+		// Bug 3: Merge DNS filter blocked categories into block list
+		blockCatSet := make(map[string]bool)
+		for _, s := range blockCats {
+			blockCatSet[s] = true
+		}
+		if dnsCats, ok := dnsExtraCats[pol.WebfilterProfile]; ok {
+			for slug := range dnsCats {
+				if !blockCatSet[slug] {
+					blockCats = append(blockCats, slug)
+					blockCatSet[slug] = true
+				}
+			}
+			c.Report.AddInfo(fmt.Sprintf("Webfilter \"%s\": DNS filter categories merged into URL filtering profile", pol.WebfilterProfile))
+		}
+
 		// Check if profile has URL filter table patterns (even if no categories)
 		hasURLFilterTable := wf.URLFilterTable > 0 && c.parser.URLFilters[wf.URLFilterTable] != nil
 		blacklistPatterns, whitelistPatterns, monitorPatterns := c.getURLFilterPatterns(wf)
+
+		// Bug 1: Merge monitor URL patterns into whitelist (with logging)
+		hasMonitorPatterns := len(monitorPatterns) > 0
+		if hasMonitorPatterns {
+			whitelistPatterns = append(whitelistPatterns, monitorPatterns...)
+		}
 
 		if len(blockCats) == 0 && len(monitorCats) == 0 && !hasURLFilterTable {
 			continue
@@ -320,11 +364,15 @@ func (c *VersaConverter) convertURLFilteringProfiles() {
 		}
 		c.output = append(c.output, pp+" blacklist evaluate-referrer true")
 
-		// Whitelist section
+		// Whitelist section (includes monitor patterns merged in)
 		if len(whitelistPatterns) > 0 {
 			c.output = append(c.output, fmt.Sprintf("%s whitelist patterns [ %s ]", pp, strings.Join(whitelistPatterns, " ")))
 		}
-		c.output = append(c.output, pp+" whitelist log-enable false")
+		if hasMonitorPatterns {
+			c.output = append(c.output, pp+" whitelist log-enable true")
+		} else {
+			c.output = append(c.output, pp+" whitelist log-enable false")
+		}
 		c.output = append(c.output, pp+" whitelist evaluate-referrer true")
 
 		if len(blockCats) > 0 {
@@ -351,25 +399,52 @@ func (c *VersaConverter) convertURLFilteringProfiles() {
 
 		c.Report.AddConverted(fmt.Sprintf("url-filtering-profile \"%s\" -> %s (%d block, %d monitor categories)",
 			pol.WebfilterProfile, profileName, len(blockCats), len(monitorCats)))
+	}
 
-		// Emit separate monitor URL filtering profile (whitelist + logging)
-		if len(monitorPatterns) > 0 {
-			monProfileName := profileName + "_url_monitor"
-			if len(monProfileName) > 63 {
-				monProfileName = monProfileName[:63]
-			}
-			c.urlMonitorProfiles[pol.WebfilterProfile] = monProfileName
-
-			mp := c.urlFilterProfilePrefix(monProfileName)
-			c.output = append(c.output, mp+" cloud-lookup disabled")
-			c.output = append(c.output, mp+" decrypt-bypass false")
-			c.output = append(c.output, mp+" blacklist evaluate-referrer true")
-			c.output = append(c.output, fmt.Sprintf("%s whitelist patterns [ %s ]", mp, strings.Join(monitorPatterns, " ")))
-			c.output = append(c.output, mp+" whitelist log-enable true")
-			c.output = append(c.output, mp+" whitelist evaluate-referrer true")
-
-			c.Report.AddConverted(fmt.Sprintf("url-filtering-profile \"%s\" (monitor URLs -> whitelist with logging)", monProfileName))
+	// Bug 3: Handle policies with dnsfilter-profile but NO webfilter-profile
+	seenDNSOnly := make(map[string]bool)
+	for _, pol := range c.parser.Policies {
+		if pol.WebfilterProfile != "" || pol.DNSFilterProfile == "" {
+			continue
 		}
+		if seenDNSOnly[pol.DNSFilterProfile] {
+			continue
+		}
+		seenDNSOnly[pol.DNSFilterProfile] = true
+
+		key := "__dns_only__" + pol.DNSFilterProfile
+		dnsCats, ok := dnsExtraCats[key]
+		if !ok || len(dnsCats) == 0 {
+			continue
+		}
+
+		var blockCats []string
+		for slug := range dnsCats {
+			blockCats = append(blockCats, slug)
+		}
+		blockCats = dedup(blockCats)
+
+		profileName := c.sanitizer.Sanitize(pol.DNSFilterProfile)
+		c.urlFilterProfiles[pol.DNSFilterProfile] = profileName
+
+		pp := c.urlFilterProfilePrefix(profileName)
+		c.output = append(c.output, pp+" cloud-lookup disabled")
+		c.output = append(c.output, pp+" decrypt-bypass false")
+		c.output = append(c.output, pp+" blacklist evaluate-referrer true")
+		c.output = append(c.output, pp+" whitelist log-enable false")
+		c.output = append(c.output, pp+" whitelist evaluate-referrer true")
+
+		actionName := profileName + "_block"
+		if len(actionName) > 63 {
+			actionName = actionName[:63]
+		}
+		c.output = append(c.output, fmt.Sprintf("%s category-action-map category-action %s url-categories predefined [ %s ]",
+			pp, actionName, strings.Join(blockCats, " ")))
+		c.output = append(c.output, fmt.Sprintf("%s category-action-map category-action %s action predefined block",
+			pp, actionName))
+
+		c.Report.AddConverted(fmt.Sprintf("url-filtering-profile \"%s\" (from DNS filter, %d block categories)", profileName, len(blockCats)))
+		c.Report.AddInfo(fmt.Sprintf("DNS filter \"%s\" -> URL filtering profile \"%s\" (no webfilter-profile on policy)", pol.DNSFilterProfile, profileName))
 	}
 }
 
@@ -716,6 +791,130 @@ func (c *VersaConverter) flattenSvcGroup(name string) []string {
 	return []string{c.sanitizer.Sanitize(name)}
 }
 
+// --- Match Helpers (shared by main rules and pre-rules) ---
+
+func (c *VersaConverter) emitMatchSourceZone(rp string, pol *PolicyObj) {
+	if srcZone, ok := c.zoneMap[pol.SrcIntf]; ok {
+		c.output = append(c.output, fmt.Sprintf("%s match source zone zone-list [ %s ]", rp, srcZone))
+	} else if pol.SrcIntf != "" {
+		c.Report.AddWarning(fmt.Sprintf("Policy \"%s\": unmapped source interface \"%s\"", pol.Name, pol.SrcIntf))
+		fallback := c.sanitizer.Sanitize(pol.SrcIntf)
+		c.output = append(c.output, fmt.Sprintf("%s match source zone zone-list [ %s ]", rp, fallback))
+	}
+}
+
+func (c *VersaConverter) emitMatchDestZone(rp string, pol *PolicyObj) {
+	if dstZone, ok := c.zoneMap[pol.DstIntf]; ok {
+		c.output = append(c.output, fmt.Sprintf("%s match destination zone zone-list [ %s ]", rp, dstZone))
+	} else if pol.DstIntf != "" {
+		c.Report.AddWarning(fmt.Sprintf("Policy \"%s\": unmapped destination interface \"%s\"", pol.Name, pol.DstIntf))
+		fallback := c.sanitizer.Sanitize(pol.DstIntf)
+		c.output = append(c.output, fmt.Sprintf("%s match destination zone zone-list [ %s ]", rp, fallback))
+	}
+}
+
+func (c *VersaConverter) emitMatchUsers(rp string, pol *PolicyObj) {
+	if len(pol.Users) > 0 || len(pol.Groups) > 0 {
+		c.output = append(c.output, rp+" match source user local-database status enabled")
+		if len(pol.Groups) > 0 {
+			var sanitizedGroups []string
+			for _, g := range pol.Groups {
+				sanitizedGroups = append(sanitizedGroups, c.sanitizer.Sanitize(g))
+			}
+			c.output = append(c.output, fmt.Sprintf("%s match source user local-database group-list [ %s ]", rp, strings.Join(sanitizedGroups, " ")))
+		}
+		if len(pol.Users) > 0 {
+			var sanitizedUsers []string
+			for _, u := range pol.Users {
+				sanitizedUsers = append(sanitizedUsers, c.sanitizer.Sanitize(u))
+			}
+			c.output = append(c.output, fmt.Sprintf("%s match source user local-database user-list [ %s ]", rp, strings.Join(sanitizedUsers, " ")))
+		}
+		c.output = append(c.output, rp+" match source user external-database status disabled")
+		c.output = append(c.output, rp+" match source user user-type selected")
+	} else {
+		c.output = append(c.output, rp+" match source user local-database status disabled")
+		c.output = append(c.output, rp+" match source user external-database status disabled")
+		c.output = append(c.output, rp+" match source user user-type any")
+	}
+}
+
+func (c *VersaConverter) emitMatchSchedule(rp string, pol *PolicyObj) {
+	if pol.Schedule != "" && pol.Schedule != "always" {
+		schedVName := c.sanitizer.Sanitize(pol.Schedule)
+		c.output = append(c.output, fmt.Sprintf("%s match schedule %s", rp, schedVName))
+	}
+}
+
+// --- Application Block Pre-Rule (Bug 2) ---
+func (c *VersaConverter) emitAppBlockRule(pol *PolicyObj, vname string) {
+	if pol.ApplicationList == "" {
+		return
+	}
+	appProfile, ok := c.parser.AppListProfiles[pol.ApplicationList]
+	if !ok {
+		return
+	}
+
+	var filterList, appList []string
+	for _, entry := range appProfile.Entries {
+		if entry.Action != "block" {
+			continue
+		}
+		for _, catID := range entry.Category {
+			if versaFilter, ok := FGAppCategoryToVersa[catID]; ok {
+				filterList = append(filterList, versaFilter)
+			} else {
+				c.Report.AddWarning(fmt.Sprintf("Policy \"%s\": application category %d has no Versa mapping", pol.Name, catID))
+			}
+		}
+		if entry.Application > 0 {
+			if versaApp, ok := FGAppIDToVersa[entry.Application]; ok {
+				appList = append(appList, versaApp)
+			} else {
+				c.Report.AddWarning(fmt.Sprintf("Policy \"%s\": application ID %d has no Versa mapping — add to FGAppIDToVersa", pol.Name, entry.Application))
+			}
+		}
+	}
+	filterList = dedup(filterList)
+	appList = dedup(appList)
+
+	if len(filterList) == 0 && len(appList) == 0 {
+		c.Report.AddWarning(fmt.Sprintf("Policy \"%s\": application-list \"%s\" has no block entries that could be mapped", pol.Name, pol.ApplicationList))
+		return
+	}
+
+	ruleName := "appblock-" + vname
+	if len(ruleName) > 63 {
+		ruleName = strings.TrimRight(strings.TrimRight(ruleName[:63], "-"), "_")
+	}
+
+	rp := c.rulePrefix(ruleName)
+	c.output = append(c.output, rp+" rule-disable false")
+
+	c.emitMatchSourceZone(rp, pol)
+	c.emitAddrMatch(rp, "source", pol.SrcAddr)
+	c.emitMatchUsers(rp, pol)
+	c.emitMatchDestZone(rp, pol)
+	c.emitAddrMatch(rp, "destination", pol.DstAddr)
+	c.emitMatchSchedule(rp, pol)
+
+	if len(filterList) > 0 {
+		c.output = append(c.output, fmt.Sprintf("%s match application predefined-filter-list [ %s ]", rp, strings.Join(filterList, " ")))
+	}
+	if len(appList) > 0 {
+		c.output = append(c.output, fmt.Sprintf("%s match application predefined-application-list [ %s ]", rp, strings.Join(appList, " ")))
+	}
+
+	c.output = append(c.output, rp+" set action deny")
+	c.output = append(c.output, rp+" set lef profile-default true")
+	c.output = append(c.output, rp+" set lef event both")
+	c.output = append(c.output, rp+" set set-type public")
+
+	c.Report.AddConverted(fmt.Sprintf("appblock-rule \"%s\" for policy \"%s\" (application-list \"%s\" block entries -> deny pre-rule)",
+		ruleName, pol.Name, pol.ApplicationList))
+}
+
 // --- Policies ---
 func (c *VersaConverter) convertPolicies() {
 	for _, pol := range c.parser.Policies {
@@ -724,10 +923,8 @@ func (c *VersaConverter) convertPolicies() {
 			c.Report.AddWarning(fmt.Sprintf("Policy renamed: \"%s\" -> \"%s\"", pol.Name, vname))
 		}
 
-		// Emit monitor-URL rule before main rule (if webfilter has monitor URL entries)
-		if monProfile, ok := c.urlMonitorProfiles[pol.WebfilterProfile]; ok {
-			c.emitMonitorURLRule(pol, vname, monProfile)
-		}
+		// Bug 2: Emit app-block deny pre-rule before main rule
+		c.emitAppBlockRule(pol, vname)
 
 		rp := c.rulePrefix(vname)
 
@@ -740,50 +937,16 @@ func (c *VersaConverter) convertPolicies() {
 		}
 
 		// Source zone
-		if srcZone, ok := c.zoneMap[pol.SrcIntf]; ok {
-			c.output = append(c.output, fmt.Sprintf("%s match source zone zone-list [ %s ]", rp, srcZone))
-		} else if pol.SrcIntf != "" {
-			c.Report.AddWarning(fmt.Sprintf("Policy \"%s\": unmapped source interface \"%s\"", pol.Name, pol.SrcIntf))
-			fallback := c.sanitizer.Sanitize(pol.SrcIntf)
-			c.output = append(c.output, fmt.Sprintf("%s match source zone zone-list [ %s ]", rp, fallback))
-		}
+		c.emitMatchSourceZone(rp, pol)
 
 		// Source addresses
 		c.emitAddrMatch(rp, "source", pol.SrcAddr)
 
 		// User/group stanzas
-		if len(pol.Users) > 0 || len(pol.Groups) > 0 {
-			c.output = append(c.output, rp+" match source user local-database status enabled")
-			if len(pol.Groups) > 0 {
-				var sanitizedGroups []string
-				for _, g := range pol.Groups {
-					sanitizedGroups = append(sanitizedGroups, c.sanitizer.Sanitize(g))
-				}
-				c.output = append(c.output, fmt.Sprintf("%s match source user local-database group-list [ %s ]", rp, strings.Join(sanitizedGroups, " ")))
-			}
-			if len(pol.Users) > 0 {
-				var sanitizedUsers []string
-				for _, u := range pol.Users {
-					sanitizedUsers = append(sanitizedUsers, c.sanitizer.Sanitize(u))
-				}
-				c.output = append(c.output, fmt.Sprintf("%s match source user local-database user-list [ %s ]", rp, strings.Join(sanitizedUsers, " ")))
-			}
-			c.output = append(c.output, rp+" match source user external-database status disabled")
-			c.output = append(c.output, rp+" match source user user-type selected")
-		} else {
-			c.output = append(c.output, rp+" match source user local-database status disabled")
-			c.output = append(c.output, rp+" match source user external-database status disabled")
-			c.output = append(c.output, rp+" match source user user-type any")
-		}
+		c.emitMatchUsers(rp, pol)
 
 		// Destination zone
-		if dstZone, ok := c.zoneMap[pol.DstIntf]; ok {
-			c.output = append(c.output, fmt.Sprintf("%s match destination zone zone-list [ %s ]", rp, dstZone))
-		} else if pol.DstIntf != "" {
-			c.Report.AddWarning(fmt.Sprintf("Policy \"%s\": unmapped destination interface \"%s\"", pol.Name, pol.DstIntf))
-			fallback := c.sanitizer.Sanitize(pol.DstIntf)
-			c.output = append(c.output, fmt.Sprintf("%s match destination zone zone-list [ %s ]", rp, fallback))
-		}
+		c.emitMatchDestZone(rp, pol)
 
 		// Destination addresses
 		c.emitAddrMatch(rp, "destination", pol.DstAddr)
@@ -800,10 +963,7 @@ func (c *VersaConverter) convertPolicies() {
 		}
 
 		// Schedule
-		if pol.Schedule != "" && pol.Schedule != "always" {
-			schedVName := c.sanitizer.Sanitize(pol.Schedule)
-			c.output = append(c.output, fmt.Sprintf("%s match schedule %s", rp, schedVName))
-		}
+		c.emitMatchSchedule(rp, pol)
 
 		// URL category match
 		c.emitURLCategoryMatch(rp, pol)
@@ -863,48 +1023,6 @@ func (c *VersaConverter) convertPolicies() {
 
 		c.Report.AddConverted(fmt.Sprintf("policy %d \"%s\" -> rule %s", pol.ID, pol.Name, vname))
 	}
-}
-
-// --- Monitor URL Rules ---
-func (c *VersaConverter) emitMonitorURLRule(pol *PolicyObj, vname, monProfile string) {
-	ruleName := "monitor-" + vname
-	if len(ruleName) > 63 {
-		ruleName = strings.TrimRight(strings.TrimRight(ruleName[:63], "-"), "_")
-	}
-
-	rp := c.rulePrefix(ruleName)
-
-	c.output = append(c.output, rp+" rule-disable false")
-
-	// Source zone
-	if srcZone, ok := c.zoneMap[pol.SrcIntf]; ok {
-		c.output = append(c.output, fmt.Sprintf("%s match source zone zone-list [ %s ]", rp, srcZone))
-	}
-
-	// User stanzas (disabled — monitor rule is zone-based)
-	c.output = append(c.output, rp+" match source user local-database status disabled")
-	c.output = append(c.output, rp+" match source user external-database status disabled")
-	c.output = append(c.output, rp+" match source user user-type any")
-
-	// Destination zone
-	if dstZone, ok := c.zoneMap[pol.DstIntf]; ok {
-		c.output = append(c.output, fmt.Sprintf("%s match destination zone zone-list [ %s ]", rp, dstZone))
-	}
-
-	// Match HTTPS only
-	c.output = append(c.output, rp+" match services predefined-services-list [ https ]")
-
-	// URL filtering profile (whitelist with logging)
-	c.output = append(c.output, fmt.Sprintf("%s set security-profile url-filtering user-defined %s", rp, monProfile))
-
-	// Action allow + logging
-	c.output = append(c.output, rp+" set action allow")
-	c.output = append(c.output, rp+" set lef profile-default true")
-	c.output = append(c.output, rp+" set lef event both")
-	c.output = append(c.output, rp+" set lef options send-pcap-data enable false")
-	c.output = append(c.output, rp+" set set-type public")
-
-	c.Report.AddConverted(fmt.Sprintf("monitor-rule \"%s\" for policy \"%s\" (URL monitor -> allow with logging)", ruleName, pol.Name))
 }
 
 // --- Decryption Policies ---
@@ -990,8 +1108,9 @@ func (c *VersaConverter) convertDecryptionPolicies() {
 			c.output = append(c.output, fmt.Sprintf("%s match destination address address-list [ %s ]", rp, strings.Join(exemptFQDNs, " ")))
 		}
 
-		// Services
-		c.output = append(c.output, rp+" match services predefined-services-list [ https ]")
+		// Services (Bug 4: use protocols from SSL profile)
+		svcList := c.sslProfileServices(pol.SSLSSHProfile)
+		c.output = append(c.output, fmt.Sprintf("%s match services predefined-services-list [ %s ]", rp, strings.Join(svcList, " ")))
 
 		// URL category exemptions
 		if len(exemptCats) > 0 {
@@ -1035,8 +1154,9 @@ func (c *VersaConverter) convertDecryptionPolicies() {
 			c.output = append(c.output, fmt.Sprintf("%s match destination zone zone-list [ %s ]", rp, dstZone))
 		}
 
-		// Services
-		c.output = append(c.output, rp+" match services predefined-services-list [ https ]")
+		// Services (Bug 4: use protocols from SSL profile)
+		svcList := c.sslProfileServices(pol.SSLSSHProfile)
+		c.output = append(c.output, fmt.Sprintf("%s match services predefined-services-list [ %s ]", rp, strings.Join(svcList, " ")))
 
 		// Action
 		c.output = append(c.output, rp+" set action decrypt-except-certpinned")
@@ -1044,6 +1164,42 @@ func (c *VersaConverter) convertDecryptionPolicies() {
 
 		c.Report.AddConverted(fmt.Sprintf("decryption-rule \"decrypt-%s\" for policy \"%s\" (deep-inspection -> decrypt-except-certpinned)", vname, pol.Name))
 	}
+}
+
+// sslProfileServices returns the Versa predefined service names for protocols
+// with deep-inspection status in the given SSL/SSH profile. Falls back to [ "https" ]
+// if the profile is not found or has no deep-inspection protocols.
+func (c *VersaConverter) sslProfileServices(profileName string) []string {
+	prof, ok := c.parser.SSLSSHProfiles[profileName]
+	if !ok || len(prof.Protocols) == 0 {
+		return []string{"https"}
+	}
+
+	// Map SSL protocol names to Versa predefined service names
+	protoToService := map[string]string{
+		"https": "https",
+		"ftps":  "ftps",
+		"imaps": "imaps",
+		"smtps": "smtps",
+		"pop3s": "pop3s",
+	}
+
+	var services []string
+	for _, proto := range prof.Protocols {
+		if proto.Status != "deep-inspection" {
+			continue
+		}
+		if svc, ok := protoToService[proto.Name]; ok {
+			if VersaPredefinedServices[svc] {
+				services = append(services, svc)
+			}
+		}
+	}
+
+	if len(services) == 0 {
+		return []string{"https"}
+	}
+	return services
 }
 
 // collectSSLExemptions gathers exempt categories and FQDN names for a given SSL profile.
@@ -1138,45 +1294,106 @@ func (c *VersaConverter) getBlockedVersaCategories(profileName string) []string 
 }
 
 // --- Security Profiles ---
+// classifyAVProfile determines the Versa AV profile based on protocol list.
+func classifyAVProfile(protocols []string) string {
+	hasWeb := false
+	hasEmail := false
+	for _, p := range protocols {
+		switch strings.ToLower(p) {
+		case "http", "ftp":
+			hasWeb = true
+		case "imap", "pop3", "smtp", "mapi":
+			hasEmail = true
+		}
+	}
+	switch {
+	case hasWeb && hasEmail:
+		return "Scan Web and Email Traffic"
+	case hasWeb:
+		return "Scan Web Traffic"
+	case hasEmail:
+		return "Scan Email Traffic"
+	default:
+		return "Scan Web and Email Traffic"
+	}
+}
+
+// SuggestProfileMappings generates auto-detected profile mappings from parsed config.
+func SuggestProfileMappings(fg *FortiGateParser) map[string]map[string]string {
+	suggestions := make(map[string]map[string]string)
+
+	avSet := make(map[string]bool)
+	ipsSet := make(map[string]bool)
+
+	for _, pol := range fg.Policies {
+		if pol.AVProfile != "" {
+			avSet[pol.AVProfile] = true
+		}
+		if pol.IPSSensor != "" {
+			ipsSet[pol.IPSSensor] = true
+		}
+	}
+
+	// Auto-map AV profiles
+	if len(avSet) > 0 {
+		avMap := make(map[string]string)
+		for name := range avSet {
+			if prof, ok := fg.AVProfiles[name]; ok && len(prof.Protocols) > 0 {
+				avMap[name] = classifyAVProfile(prof.Protocols)
+			} else {
+				avMap[name] = "Scan Web and Email Traffic"
+			}
+		}
+		suggestions["av-profile"] = avMap
+	}
+
+	// Auto-map IPS sensors -> Versa Recommended Profile
+	if len(ipsSet) > 0 {
+		ipsMap := make(map[string]string)
+		for name := range ipsSet {
+			ipsMap[name] = "Versa Recommended Profile"
+		}
+		suggestions["ips-sensor"] = ipsMap
+	}
+
+	return suggestions
+}
+
 func (c *VersaConverter) emitSecurityProfiles(rp string, pol *PolicyObj) {
 	spMap := c.secProfileMap
 
-	// Antivirus
+	// Antivirus — explicit mapping takes priority, then auto-map
 	if pol.AVProfile != "" {
 		if avMap, ok := spMap["av-profile"]; ok {
 			if versaName, ok := avMap[pol.AVProfile]; ok {
 				c.output = append(c.output, fmt.Sprintf("%s set security-profile antivirus predefined-av-profile \"%s\"", rp, versaName))
 			} else {
-				c.Report.AddWarning(fmt.Sprintf("Policy \"%s\": av-profile \"%s\" - no mapping in security_profile_map", pol.Name, pol.AVProfile))
+				c.autoMapAV(rp, pol)
 			}
 		} else {
-			c.Report.AddWarning(fmt.Sprintf("Policy \"%s\": av-profile \"%s\" - no mapping in security_profile_map", pol.Name, pol.AVProfile))
+			c.autoMapAV(rp, pol)
 		}
 	}
 
-	// DNS filtering
+	// DNS filtering — merged into URL filtering profile (Bug 3), no separate emission
 	if pol.DNSFilterProfile != "" {
-		if dnsMap, ok := spMap["dnsfilter-profile"]; ok {
-			if versaName, ok := dnsMap[pol.DNSFilterProfile]; ok {
-				c.output = append(c.output, fmt.Sprintf("%s set security-profile dns-filtering predefined \"%s\"", rp, versaName))
-			} else {
-				c.Report.AddWarning(fmt.Sprintf("Policy \"%s\": dnsfilter-profile \"%s\" - no mapping in security_profile_map", pol.Name, pol.DNSFilterProfile))
-			}
-		} else {
-			c.Report.AddWarning(fmt.Sprintf("Policy \"%s\": dnsfilter-profile \"%s\" - no mapping in security_profile_map", pol.Name, pol.DNSFilterProfile))
-		}
+		c.Report.AddInfo(fmt.Sprintf("Policy \"%s\": dnsfilter-profile \"%s\" -> categories merged into URL filtering profile", pol.Name, pol.DNSFilterProfile))
 	}
 
-	// IPS
+	// IPS — explicit mapping takes priority, then auto-map
 	if pol.IPSSensor != "" {
 		if ipsMap, ok := spMap["ips-sensor"]; ok {
 			if versaName, ok := ipsMap[pol.IPSSensor]; ok {
 				c.output = append(c.output, fmt.Sprintf("%s set security-profile ips predefined-ips-profile \"%s\"", rp, versaName))
 			} else {
-				c.Report.AddWarning(fmt.Sprintf("Policy \"%s\": ips-sensor \"%s\" - no mapping in security_profile_map", pol.Name, pol.IPSSensor))
+				versaIPS := "Versa Recommended Profile"
+				c.Report.AddInfo(fmt.Sprintf("Policy \"%s\": ips-sensor \"%s\" auto-mapped to \"%s\"", pol.Name, pol.IPSSensor, versaIPS))
+				c.output = append(c.output, fmt.Sprintf("%s set security-profile ips predefined-ips-profile \"%s\"", rp, versaIPS))
 			}
 		} else {
-			c.Report.AddWarning(fmt.Sprintf("Policy \"%s\": ips-sensor \"%s\" - no mapping in security_profile_map", pol.Name, pol.IPSSensor))
+			versaIPS := "Versa Recommended Profile"
+			c.Report.AddInfo(fmt.Sprintf("Policy \"%s\": ips-sensor \"%s\" auto-mapped to \"%s\"", pol.Name, pol.IPSSensor, versaIPS))
+			c.output = append(c.output, fmt.Sprintf("%s set security-profile ips predefined-ips-profile \"%s\"", rp, versaIPS))
 		}
 	}
 
@@ -1194,62 +1411,27 @@ func (c *VersaConverter) emitSecurityProfiles(rp string, pol *PolicyObj) {
 		} else {
 			c.Report.AddWarning(fmt.Sprintf("Policy \"%s\": webfilter-profile \"%s\" - no mapping in security_profile_map", pol.Name, pol.WebfilterProfile))
 		}
+	} else if pol.DNSFilterProfile != "" {
+		// Bug 3: DNS-only policies get a URL filtering profile created from DNS filter categories
+		if profileName, ok := c.urlFilterProfiles[pol.DNSFilterProfile]; ok {
+			c.output = append(c.output, fmt.Sprintf("%s set security-profile url-filtering user-defined %s", rp, profileName))
+		}
 	}
 
-	// Application list
-	if pol.ApplicationList != "" {
-		c.emitAppControl(rp, pol)
-	}
+	// Application list — block entries handled by emitAppBlockRule() deny pre-rule (Bug 2)
+	// No match application on the main allow rule.
 }
 
-// --- Application Control ---
-func (c *VersaConverter) emitAppControl(rp string, pol *PolicyObj) {
-	appProfile, ok := c.parser.AppListProfiles[pol.ApplicationList]
-	if !ok {
-		c.Report.AddWarning(fmt.Sprintf("Policy \"%s\": application-list \"%s\" not found in parsed config", pol.Name, pol.ApplicationList))
-		return
-	}
-
-	var filterList []string
-	var appList []string
-
-	for _, entry := range appProfile.Entries {
-		if entry.Action != "block" {
-			continue
-		}
-		// Category-based entries → Versa application filters
-		for _, catID := range entry.Category {
-			if versaFilter, ok := FGAppCategoryToVersa[catID]; ok {
-				filterList = append(filterList, versaFilter)
-			} else {
-				c.Report.AddWarning(fmt.Sprintf("Policy \"%s\": application category %d has no Versa mapping", pol.Name, catID))
-			}
-		}
-		// Specific application entries → Versa predefined applications
-		if entry.Application > 0 {
-			if versaApp, ok := FGAppIDToVersa[entry.Application]; ok {
-				appList = append(appList, versaApp)
-			} else {
-				c.Report.AddWarning(fmt.Sprintf("Policy \"%s\": application ID %d has no Versa mapping — add to FGAppIDToVersa", pol.Name, entry.Application))
-			}
-		}
-	}
-
-	filterList = dedup(filterList)
-	appList = dedup(appList)
-
-	if len(filterList) > 0 {
-		c.output = append(c.output, fmt.Sprintf("%s match application predefined-filter-list [ %s ]", rp, strings.Join(filterList, " ")))
-	}
-	if len(appList) > 0 {
-		c.output = append(c.output, fmt.Sprintf("%s match application predefined-application-list [ %s ]", rp, strings.Join(appList, " ")))
-	}
-
-	if len(filterList) == 0 && len(appList) == 0 {
-		c.Report.AddWarning(fmt.Sprintf("Policy \"%s\": application-list \"%s\" has no block entries that could be mapped", pol.Name, pol.ApplicationList))
+func (c *VersaConverter) autoMapAV(rp string, pol *PolicyObj) {
+	var versaAV string
+	if prof, ok := c.parser.AVProfiles[pol.AVProfile]; ok && len(prof.Protocols) > 0 {
+		versaAV = classifyAVProfile(prof.Protocols)
+		c.Report.AddInfo(fmt.Sprintf("Policy \"%s\": av-profile \"%s\" auto-mapped to \"%s\" (protocols: %s)", pol.Name, pol.AVProfile, versaAV, strings.Join(prof.Protocols, ", ")))
 	} else {
-		c.Report.AddConverted(fmt.Sprintf("application-list \"%s\" -> %d filters, %d apps", pol.ApplicationList, len(filterList), len(appList)))
+		versaAV = "Scan Web and Email Traffic"
+		c.Report.AddInfo(fmt.Sprintf("Policy \"%s\": av-profile \"%s\" auto-mapped to \"%s\" (default — no protocol info)", pol.Name, pol.AVProfile, versaAV))
 	}
+	c.output = append(c.output, fmt.Sprintf("%s set security-profile antivirus predefined-av-profile \"%s\"", rp, versaAV))
 }
 
 // --- Address Match ---

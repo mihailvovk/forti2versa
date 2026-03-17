@@ -5,11 +5,12 @@ import (
 	"strings"
 )
 
-// ConversionReport tracks [OK], [SKIP], [WARN] entries.
+// ConversionReport tracks [OK], [SKIP], [WARN], [INFO] entries.
 type ConversionReport struct {
 	Converted []string
 	Skipped   []string
 	Warnings  []string
+	Info      []string
 }
 
 func NewConversionReport() *ConversionReport {
@@ -28,6 +29,10 @@ func (r *ConversionReport) AddWarning(msg string) {
 	r.Warnings = append(r.Warnings, msg)
 }
 
+func (r *ConversionReport) AddInfo(msg string) {
+	r.Info = append(r.Info, msg)
+}
+
 func (r *ConversionReport) Render() string {
 	var b strings.Builder
 	b.WriteString(strings.Repeat("=", 72))
@@ -39,6 +44,7 @@ func (r *ConversionReport) Render() string {
 	fmt.Fprintf(&b, "Converted: %d\n", len(r.Converted))
 	fmt.Fprintf(&b, "Skipped:   %d\n", len(r.Skipped))
 	fmt.Fprintf(&b, "Warnings:  %d\n", len(r.Warnings))
+	fmt.Fprintf(&b, "Info:      %d\n", len(r.Info))
 	b.WriteByte('\n')
 	if len(r.Converted) > 0 {
 		b.WriteString("--- Converted Objects ---\n")
@@ -58,6 +64,13 @@ func (r *ConversionReport) Render() string {
 		b.WriteString("--- Warnings ---\n")
 		for _, w := range r.Warnings {
 			fmt.Fprintf(&b, "  [WARN] %s\n", w)
+		}
+		b.WriteByte('\n')
+	}
+	if len(r.Info) > 0 {
+		b.WriteString("--- Info ---\n")
+		for _, i := range r.Info {
+			fmt.Fprintf(&b, "  [INFO] %s\n", i)
 		}
 		b.WriteByte('\n')
 	}
