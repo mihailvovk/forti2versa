@@ -62,6 +62,30 @@ Download from the [Releases](../../releases) page:
 
 Requires **Go 1.22+** (no external dependencies).
 
+#### Installing Go
+
+**macOS** (Homebrew):
+```bash
+brew install go
+```
+
+**Linux** (Ubuntu/Debian):
+```bash
+# Download latest Go (check https://go.dev/dl/ for current version)
+wget https://go.dev/dl/go1.24.1.linux-amd64.tar.gz
+sudo rm -rf /usr/local/go
+sudo tar -C /usr/local -xzf go1.24.1.linux-amd64.tar.gz
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
+source ~/.bashrc
+go version
+```
+
+**Windows**:
+
+Download the MSI installer from [go.dev/dl](https://go.dev/dl/) and run it. Go will be added to your PATH automatically. Open a new terminal and verify with `go version`.
+
+#### Building
+
 ```bash
 git clone https://github.com/mihailvovk/forti2versa.git
 cd forti2versa
