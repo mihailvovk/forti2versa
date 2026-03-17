@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"sort"
 	"strings"
 )
 
@@ -1142,70 +1143,57 @@ func (c *VersaConverter) convertDecryptionPolicies() {
 	c.Report.AddConverted(fmt.Sprintf("decrypt-profile -> %s (ssl-forward-proxy)", profileName))
 	c.Report.AddWarning("Decrypt profile uses template variables for certificate/ca-chain — provision in Versa Director")
 
-	// Emit no-decrypt rules (SSL exemptions) BEFORE decrypt rules
-	for _, pol := range c.parser.Policies {
-		if pol.SSLSSHProfile == "" || !deepProfiles[pol.SSLSSHProfile] {
+	// Report dropped ssl-exempt-categories (Versa inspects SNI/headers without decrypting)
+	for profName, prof := range c.parser.SSLSSHProfiles {
+		if !deepProfiles[profName] {
 			continue
 		}
-
-		exemptCats, exemptFQDNs := c.collectSSLExemptions(pol.SSLSSHProfile)
-		if len(exemptCats) == 0 && len(exemptFQDNs) == 0 {
-			continue
+		if len(prof.ExemptCats) > 0 || len(prof.Exemptions) > 0 {
+			c.Report.AddWarning(fmt.Sprintf("SSL profile \"%s\": ssl-exempt-categories/ssl-exempt dropped — Versa inspects SNI/headers without decrypting", profName))
 		}
-
-		vname := c.sanitizer.Sanitize(pol.Name)
-		ruleName := "nodecrypt-" + vname
-		if len(ruleName) > 63 {
-			ruleName = strings.TrimRight(strings.TrimRight(ruleName[:63], "-"), "_")
-		}
-
-		rp := c.decryptRulePrefix(ruleName)
-
-		c.output = append(c.output, rp+" rule-disable false")
-
-		// Source zone
-		if srcZone, ok := c.zoneMap[pol.SrcIntf]; ok {
-			c.output = append(c.output, fmt.Sprintf("%s match source zone zone-list [ %s ]", rp, srcZone))
-		}
-
-		// Source user stanzas (always disabled for decrypt rules)
-		c.output = append(c.output, rp+" match source user local-database status disabled")
-		c.output = append(c.output, rp+" match source user external-database status disabled")
-		c.output = append(c.output, rp+" match source user user-type any")
-
-		// Destination zone
-		if dstZone, ok := c.zoneMap[pol.DstIntf]; ok {
-			c.output = append(c.output, fmt.Sprintf("%s match destination zone zone-list [ %s ]", rp, dstZone))
-		}
-
-		// Destination addresses (FQDN exemptions)
-		if len(exemptFQDNs) > 0 {
-			c.output = append(c.output, fmt.Sprintf("%s match destination address address-list [ %s ]", rp, strings.Join(exemptFQDNs, " ")))
-		}
-
-		// Services (Bug 4: use protocols from SSL profile)
-		svcList := c.sslProfileServices(pol.SSLSSHProfile)
-		c.output = append(c.output, fmt.Sprintf("%s match services predefined-services-list [ %s ]", rp, strings.Join(svcList, " ")))
-
-		// URL category exemptions
-		if len(exemptCats) > 0 {
-			c.output = append(c.output, fmt.Sprintf("%s match url-category predefined [ %s ]", rp, strings.Join(exemptCats, " ")))
-		}
-
-		// Action — allow without decryption
-		c.output = append(c.output, rp+" set action allow")
-
-		c.Report.AddConverted(fmt.Sprintf("decryption-rule \"%s\" for policy \"%s\" (ssl-exempt -> allow without decryption)", ruleName, pol.Name))
 	}
 
-	// Emit decrypt rules
+	// Consolidate decrypt rules by zone pair — Versa uses one broad rule per zone pair
+	type zonePair struct {
+		src, dst string
+	}
+	pairServices := make(map[zonePair]map[string]bool)
+	pairPolicies := make(map[zonePair][]string)
+
 	for _, pol := range c.parser.Policies {
 		if pol.SSLSSHProfile == "" || !deepProfiles[pol.SSLSSHProfile] {
 			continue
 		}
+		srcZone := c.zoneMap[pol.SrcIntf]
+		dstZone := c.zoneMap[pol.DstIntf]
+		if srcZone == "" || dstZone == "" {
+			continue
+		}
+		zp := zonePair{srcZone, dstZone}
+		if pairServices[zp] == nil {
+			pairServices[zp] = make(map[string]bool)
+		}
+		for _, svc := range c.sslProfileServices(pol.SSLSSHProfile) {
+			pairServices[zp][svc] = true
+		}
+		pairPolicies[zp] = append(pairPolicies[zp], pol.Name)
+	}
 
-		vname := c.sanitizer.Sanitize(pol.Name)
-		ruleName := "decrypt-" + vname
+	// Sort zone pairs for deterministic output
+	var pairs []zonePair
+	for zp := range pairServices {
+		pairs = append(pairs, zp)
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].src != pairs[j].src {
+			return pairs[i].src < pairs[j].src
+		}
+		return pairs[i].dst < pairs[j].dst
+	})
+
+	// Emit one decrypt rule per zone pair
+	for _, zp := range pairs {
+		ruleName := fmt.Sprintf("decrypt-%s-to-%s", c.sanitizer.Sanitize(zp.src), c.sanitizer.Sanitize(zp.dst))
 		if len(ruleName) > 63 {
 			ruleName = strings.TrimRight(strings.TrimRight(ruleName[:63], "-"), "_")
 		}
@@ -1213,31 +1201,24 @@ func (c *VersaConverter) convertDecryptionPolicies() {
 		rp := c.decryptRulePrefix(ruleName)
 
 		c.output = append(c.output, rp+" rule-disable false")
-
-		// Source zone
-		if srcZone, ok := c.zoneMap[pol.SrcIntf]; ok {
-			c.output = append(c.output, fmt.Sprintf("%s match source zone zone-list [ %s ]", rp, srcZone))
-		}
-
-		// Source user stanzas (always disabled for decrypt rules)
+		c.output = append(c.output, fmt.Sprintf("%s match source zone zone-list [ %s ]", rp, zp.src))
 		c.output = append(c.output, rp+" match source user local-database status disabled")
 		c.output = append(c.output, rp+" match source user external-database status disabled")
 		c.output = append(c.output, rp+" match source user user-type any")
+		c.output = append(c.output, fmt.Sprintf("%s match destination zone zone-list [ %s ]", rp, zp.dst))
 
-		// Destination zone
-		if dstZone, ok := c.zoneMap[pol.DstIntf]; ok {
-			c.output = append(c.output, fmt.Sprintf("%s match destination zone zone-list [ %s ]", rp, dstZone))
+		var services []string
+		for svc := range pairServices[zp] {
+			services = append(services, svc)
 		}
+		sort.Strings(services)
+		c.output = append(c.output, fmt.Sprintf("%s match services predefined-services-list [ %s ]", rp, strings.Join(services, " ")))
 
-		// Services (Bug 4: use protocols from SSL profile)
-		svcList := c.sslProfileServices(pol.SSLSSHProfile)
-		c.output = append(c.output, fmt.Sprintf("%s match services predefined-services-list [ %s ]", rp, strings.Join(svcList, " ")))
-
-		// Action
 		c.output = append(c.output, rp+" set action decrypt-except-certpinned")
 		c.output = append(c.output, fmt.Sprintf("%s set decryption-profile %s", rp, profileName))
 
-		c.Report.AddConverted(fmt.Sprintf("decryption-rule \"decrypt-%s\" for policy \"%s\" (deep-inspection -> decrypt-except-certpinned)", vname, pol.Name))
+		polNames := strings.Join(pairPolicies[zp], ", ")
+		c.Report.AddConverted(fmt.Sprintf("decryption-rule \"%s\" (consolidated from: %s)", ruleName, polNames))
 	}
 }
 
@@ -1275,52 +1256,6 @@ func (c *VersaConverter) sslProfileServices(profileName string) []string {
 		return []string{"https"}
 	}
 	return services
-}
-
-// collectSSLExemptions gathers exempt categories and FQDN names for a given SSL profile.
-func (c *VersaConverter) collectSSLExemptions(profileName string) (cats, fqdns []string) {
-	prof, ok := c.parser.SSLSSHProfiles[profileName]
-	if !ok {
-		return
-	}
-
-	catSet := make(map[string]bool)
-
-	// From ssl-exempt-categories (inline category IDs)
-	for _, catID := range prof.ExemptCats {
-		versaSlug, ok := FGCategoryToVersa[catID]
-		if !ok {
-			c.Report.AddWarning(fmt.Sprintf("SSL profile \"%s\": exempt category ID %d has no Versa mapping", profileName, catID))
-			continue
-		}
-		if !catSet[versaSlug] {
-			catSet[versaSlug] = true
-			cats = append(cats, versaSlug)
-		}
-	}
-
-	// From config ssl-exempt block
-	for _, ex := range prof.Exemptions {
-		switch ex.Type {
-		case "fortiguard-cat", "":
-			if ex.FortiguardCategory > 0 {
-				versaSlug, ok := FGCategoryToVersa[ex.FortiguardCategory]
-				if !ok {
-					c.Report.AddWarning(fmt.Sprintf("SSL profile \"%s\": exempt category ID %d has no Versa mapping", profileName, ex.FortiguardCategory))
-					continue
-				}
-				if !catSet[versaSlug] {
-					catSet[versaSlug] = true
-					cats = append(cats, versaSlug)
-				}
-			}
-		case "wildcard-fqdn":
-			if ex.WildcardFQDN != "" {
-				fqdns = append(fqdns, c.sanitizer.Sanitize(ex.WildcardFQDN))
-			}
-		}
-	}
-	return
 }
 
 // --- URL Category Match ---

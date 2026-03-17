@@ -379,6 +379,10 @@ end
 	if !strings.Contains(out, "decrypt-except-certpinned") {
 		t.Error("missing decrypt action")
 	}
+	// Consolidated rule named by zone pair
+	if !strings.Contains(out, "decrypt-LAN-Zone-to-WAN-Zone") {
+		t.Error("missing consolidated decrypt rule named by zone pair")
+	}
 	if !strings.Contains(out, "predefined-services-list [ https ]") {
 		t.Error("missing https service in decrypt rule")
 	}
@@ -478,7 +482,7 @@ end
 	}
 }
 
-func TestConvertDecryptionWithExemptions(t *testing.T) {
+func TestConvertDecryptionExemptionsDropped(t *testing.T) {
 	text := `
 config firewall ssl-ssh-profile
     edit "deep-inspection"
@@ -504,27 +508,24 @@ end
 	c := NewVersaConverter(p, newTestConfig())
 	out := c.Convert()
 
-	// Should have no-decrypt rule BEFORE decrypt rule
-	noDecryptIdx := strings.Index(out, "nodecrypt-Exempt-Test")
-	decryptIdx := strings.Index(out, "decrypt-Exempt-Test")
-	if noDecryptIdx < 0 {
-		t.Error("missing nodecrypt rule")
+	// No nodecrypt rules — Versa inspects SNI/headers without decrypting
+	if strings.Contains(out, "nodecrypt") {
+		t.Error("should not generate nodecrypt rules — Versa inspects SNI/headers without decrypting")
 	}
-	if decryptIdx < 0 {
-		t.Error("missing decrypt rule")
+
+	// Should still have the broad decrypt rule
+	if !strings.Contains(out, "decrypt-LAN-Zone-to-WAN-Zone") {
+		t.Error("missing consolidated decrypt rule")
 	}
-	if noDecryptIdx > decryptIdx {
-		t.Error("nodecrypt rule should come before decrypt rule")
-	}
-	if !strings.Contains(out, "match url-category predefined [ peer_to_peer abortion ]") {
-		t.Error("missing url-category match in nodecrypt rule")
-	}
-	if !strings.Contains(out, "nodecrypt-Exempt-Test") && !strings.Contains(out, "set action allow") {
-		t.Error("missing allow action on nodecrypt rule")
+
+	// Report should warn about dropped exemptions
+	report := c.Report.Render()
+	if !strings.Contains(report, "ssl-exempt-categories/ssl-exempt dropped") {
+		t.Error("missing report warning about dropped ssl-exempt-categories")
 	}
 }
 
-func TestConvertDecryptionFQDNExemption(t *testing.T) {
+func TestConvertDecryptionFQDNExemptionDropped(t *testing.T) {
 	text := `
 config firewall wildcard-fqdn custom
     edit "adobe"
@@ -560,14 +561,20 @@ end
 	c := NewVersaConverter(p, newTestConfig())
 	out := c.Convert()
 
-	if !strings.Contains(out, "addresses address adobe fqdn *.adobe.com") {
-		t.Error("missing wildcard-fqdn address object for FQDN exemption")
+	// No nodecrypt rules — Versa inspects SNI/headers without decrypting
+	if strings.Contains(out, "nodecrypt") {
+		t.Error("should not generate nodecrypt rules — Versa inspects SNI/headers without decrypting")
 	}
-	if !strings.Contains(out, "nodecrypt-FQDN-Exempt") {
-		t.Error("missing nodecrypt rule for FQDN exemption")
+
+	// Should still have the broad decrypt rule
+	if !strings.Contains(out, "decrypt-LAN-Zone-to-WAN-Zone") {
+		t.Error("missing consolidated decrypt rule")
 	}
-	if !strings.Contains(out, "match destination address address-list [ adobe ]") {
-		t.Error("missing FQDN destination match in nodecrypt rule")
+
+	// Report should warn about dropped exemptions
+	report := c.Report.Render()
+	if !strings.Contains(report, "ssl-exempt-categories/ssl-exempt dropped") {
+		t.Error("missing report warning about dropped ssl-exempt")
 	}
 }
 
@@ -985,9 +992,9 @@ end
 	c := NewVersaConverter(p, newTestConfig())
 	out := c.Convert()
 
-	// Bug 4: Decrypt rule should have all 3 protocols
-	if !strings.Contains(out, "predefined-services-list [ https ftps imaps ]") {
-		t.Errorf("decrypt rule should have https ftps imaps services, got output:\n%s", out)
+	// Consolidated rule should have all 3 protocols (sorted)
+	if !strings.Contains(out, "predefined-services-list [ ftps https imaps ]") {
+		t.Errorf("decrypt rule should have ftps https imaps services (sorted), got output:\n%s", out)
 	}
 }
 
@@ -1024,13 +1031,13 @@ end
 	c := NewVersaConverter(p, newTestConfig())
 	out := c.Convert()
 
-	// Bug 4: Only deep-inspection protocols should appear
+	// Only deep-inspection protocols should appear in consolidated rule
 	if !strings.Contains(out, "predefined-services-list [ https ]") {
 		t.Errorf("decrypt rule should only have https (ftps is cert-inspection), got output:\n%s", out)
 	}
 	// ftps should NOT be in services (it's only certificate-inspection)
 	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "decrypt-Cert-Only-Test") && strings.Contains(line, "predefined-services-list") && strings.Contains(line, "ftps") {
+		if strings.Contains(line, "decrypt-LAN-Zone-to-WAN-Zone") && strings.Contains(line, "predefined-services-list") && strings.Contains(line, "ftps") {
 			t.Error("ftps should not be in decrypt services (certificate-inspection only)")
 		}
 	}
