@@ -1,0 +1,22 @@
+# Binaries
+forti2versa
+api
+*.exe
+dist/
+
+# Conversion output
+*.cfg
+*_report.txt
+*_4director.cfg
+!testdata/*.cfg
+!testdata/*_report.txt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Docker
+Dockerfile

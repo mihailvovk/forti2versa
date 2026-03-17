@@ -1,0 +1,38 @@
+{
+  "template_name": "<TEMPLATE-NAME>",
+  "org_name": "<ORG>",
+  "policy_name": "Default-Policy",
+  "interface_zone_map": {
+    "ssl.root": "RAVPN-Zone",
+    "wan1": "WAN-Zone",
+    "port1": "LAN-Zone",
+    "port2": "LAN-Zone",
+    "dmz": "DMZ-Zone",
+    "guest-vlan": "Guest-Zone",
+    "internal": "Internal-Zone"
+  },
+  "skip_orphans": true,
+  "schedule_map": {
+    "Business_Hours": "08:00-17:00"
+  },
+  "security_profile_map": {
+    "av-profile": {
+      "AV_drop_default": "Scan Web and Email Traffic",
+      "AV_monitor_default": "Scan Web Traffic"
+    },
+    "ips-sensor": {
+      "IPS_drop_default": "Versa Recommended Profile",
+      "IPS_monitor_all": "All Attack Rules",
+      "IPS_protect_servers": "Server Protection"
+    },
+    "webfilter-profile": {
+      "Shore_Strict_Allow": "corporate",
+      "Block_All_Web": "block_all",
+      "WebProfile_Proxy_Full": "corporate",
+      "webfilter-demo": "allow_all"
+    },
+    "dnsfilter-profile": {
+      "DNS_Filter_Default": "Versa Recommended"
+    }
+  }
+}

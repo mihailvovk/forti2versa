@@ -1,0 +1,195 @@
+========================================================================
+CONVERSION REPORT
+========================================================================
+
+Converted: 72
+Skipped:   62
+Warnings:  47
+
+--- Converted Objects ---
+  [OK] address "ravpn-client-net" -> ravpn-client-net (ipmask 10.200.0.0/24)
+  [OK] address "PUBLIC-NETWORKS" -> match-all (0.0.0.0/0, omitted)
+  [OK] address "LAN" -> LAN (ipmask 192.168.1.0/24)
+  [OK] address "WebServer_DMZ" -> WebServer_DMZ (ipmask 172.16.10.10/32)
+  [OK] address "Internal_WebServer" -> Internal_WebServer (ipmask 10.10.10.80/32)
+  [OK] address "IP_Range_Finance" -> group IP_Range_Finance (6 CIDRs)
+  [OK] address "Internal_Networks" -> group Internal_Networks (46 CIDRs)
+  [OK] address "GEO_US" -> geolocation country US (inline in rules)
+  [OK] service "HTTP" -> predefined http
+  [OK] service "HTTPS" -> predefined https
+  [OK] service "DNS" -> predefined domain
+  [OK] service "ALL" -> match-all (omitted)
+  [OK] schedule "Business_Hours" -> Business_Hours (daily 08:00-17:00)
+  [OK] url-filtering-profile "Shore_Strict_Allow" -> Shore_Strict_Allow (7 block, 5 monitor categories)
+  [OK] url-filtering-profile "Shore_Strict_Allow_url_monitor" (monitor URLs -> whitelist with logging)
+  [OK] url-filtering-profile "Block_All_Web" -> Block_All_Web (1 block, 0 monitor categories)
+  [OK] url-filtering-profile "WebProfile_Proxy_Full" -> WebProfile_Proxy_Full (2 block, 2 monitor categories)
+  [OK] url-filtering-profile "WebProfile_Proxy_Full_url_monitor" (monitor URLs -> whitelist with logging)
+  [OK] url-filtering-profile "webfilter-demo" -> webfilter-demo (0 block, 0 monitor categories)
+  [OK] url-filtering-profile "webfilter-demo_url_monitor" (monitor URLs -> whitelist with logging)
+  [OK] monitor-rule "monitor-RAVPN-intern-High-Bandwidth" for policy "RAVPN-intern-High-Bandwidth" (URL monitor -> allow with logging)
+  [OK] application-list "App_Control_Standard" -> 2 filters, 1 apps
+  [OK] policy 1 "RAVPN-intern-High-Bandwidth" -> rule RAVPN-intern-High-Bandwidth
+  [OK] monitor-rule "monitor-LAN_Internet_Filtered" for policy "LAN_Internet_Filtered" (URL monitor -> allow with logging)
+  [OK] policy 2 "LAN_Internet_Filtered" -> rule LAN_Internet_Filtered
+  [OK] application-list "App_Control_Strict" -> 3 filters, 0 apps
+  [OK] policy 3 "DMZ_Outbound_Strict" -> rule DMZ_Outbound_Strict
+  [OK] policy 4 "Guest_Monitor_Only" -> rule Guest_Monitor_Only
+  [OK] monitor-rule "monitor-Finance_Authenticated_Web" for policy "Finance_Authenticated_Web" (URL monitor -> allow with logging)
+  [OK] policy 5 "Finance_Authenticated_Web" -> rule Finance_Authenticated_Web
+  [OK] monitor-rule "monitor-NGFW_App_Web_Policy" for policy "NGFW_App_Web_Policy" (URL monitor -> allow with logging)
+  [OK] policy 6 "NGFW_App_Web_Policy" -> rule NGFW_App_Web_Policy
+  [OK] policy 7 "Inbound_WebServer_Protected" -> rule Inbound_WebServer_Protected
+  [OK] policy 8 "Block_Social_Media" -> rule Block_Social_Media
+  [OK] policy 9 "Deny_Hacking_Sources" -> rule Deny_Hacking_Sources
+  [OK] policy 10 "VPN.Users(External).HTTPS-Access" -> rule VPN_Users_External_HTTPS-Access
+  [OK] policy 11 "Finance & HR Internet Access" -> rule Finance_HR_Internet_Access
+  [OK] policy 12 "Guest@WiFi-Policy" -> rule Guest_WiFi-Policy
+  [OK] policy 13 "RAVPN-PRE_VeryLongPolicyNameThatDefinitelyExceedsTheVersa63CharacterLimitForFirewallRuleNaming" -> rule RAVPN-PRE_VeryLongPolicyNameThatDefinitelyExceedsTheVersa63Char
+  [OK] policy 14 "Multiline-Comment-Test-Policy" -> rule Multiline-Comment-Test-Policy
+  [OK] policy 15 "IT-SysAdmin-Internal-Access" -> rule IT-SysAdmin-Internal-Access
+  [OK] monitor-rule "monitor-FIM-TECH-Cruises-Internet" for policy "FIM-TECH-Cruises-Internet" (URL monitor -> allow with logging)
+  [OK] policy 16 "FIM-TECH-Cruises-Internet" -> rule FIM-TECH-Cruises-Internet
+  [OK] policy 17 "NetAdmin-and-SysAdmin-Mgmt-Access" -> rule NetAdmin-and-SysAdmin-Mgmt-Access
+  [OK] monitor-rule "monitor-Finance-Mixed-Groups-ERP-Access" for policy "Finance-Mixed-Groups-ERP-Access" (URL monitor -> allow with logging)
+  [OK] policy 18 "Finance-Mixed-Groups-ERP-Access" -> rule Finance-Mixed-Groups-ERP-Access
+  [OK] policy 19 "dobbermann-martin-SSH-Access" -> rule dobbermann-martin-SSH-Access
+  [OK] policy 20 "Named-Users-DevDB-Access" -> rule Named-Users-DevDB-Access
+  [OK] monitor-rule "monitor-Mixed-Users-VPN-Internet" for policy "Mixed-Users-VPN-Internet" (URL monitor -> allow with logging)
+  [OK] policy 21 "Mixed-Users-VPN-Internet" -> rule Mixed-Users-VPN-Internet
+  [OK] policy 22 "Backup-Admin-Plus-Named-Users" -> rule Backup-Admin-Plus-Named-Users
+  [OK] monitor-rule "monitor-CMG-Maritime-Named-Users-Internet" for policy "CMG-Maritime-Named-Users-Internet" (URL monitor -> allow with logging)
+  [OK] policy 23 "CMG-Maritime-Named-Users-Internet" -> rule CMG-Maritime-Named-Users-Internet
+  [OK] policy 24 "FIM-ORG-IT-Business-Access" -> rule FIM-ORG-IT-Business-Access
+  [OK] monitor-rule "monitor-External-Vendor-Amptown-Entertainment" for policy "External-Vendor-Amptown-Entertainment" (URL monitor -> allow with logging)
+  [OK] policy 25 "External-Vendor-Amptown-Entertainment" -> rule External-Vendor-Amptown-Entertainment
+  [OK] policy 26 "RemoteVendors-MultiGroup-Access" -> rule RemoteVendors-MultiGroup-Access
+  [OK] decrypt-profile -> ssl-decrypt-profile (ssl-forward-proxy)
+  [OK] decryption-rule "nodecrypt-RAVPN-intern-High-Bandwidth" for policy "RAVPN-intern-High-Bandwidth" (ssl-exempt -> allow without decryption)
+  [OK] decryption-rule "nodecrypt-DMZ_Outbound_Strict" for policy "DMZ_Outbound_Strict" (ssl-exempt -> allow without decryption)
+  [OK] decryption-rule "nodecrypt-Finance_Authenticated_Web" for policy "Finance_Authenticated_Web" (ssl-exempt -> allow without decryption)
+  [OK] decryption-rule "nodecrypt-Inbound_WebServer_Protected" for policy "Inbound_WebServer_Protected" (ssl-exempt -> allow without decryption)
+  [OK] decryption-rule "nodecrypt-FIM-TECH-Cruises-Internet" for policy "FIM-TECH-Cruises-Internet" (ssl-exempt -> allow without decryption)
+  [OK] decryption-rule "nodecrypt-Finance-Mixed-Groups-ERP-Access" for policy "Finance-Mixed-Groups-ERP-Access" (ssl-exempt -> allow without decryption)
+  [OK] decryption-rule "nodecrypt-Mixed-Users-VPN-Internet" for policy "Mixed-Users-VPN-Internet" (ssl-exempt -> allow without decryption)
+  [OK] decryption-rule "decrypt-RAVPN-intern-High-Bandwidth" for policy "RAVPN-intern-High-Bandwidth" (deep-inspection -> decrypt-except-certpinned)
+  [OK] decryption-rule "decrypt-DMZ_Outbound_Strict" for policy "DMZ_Outbound_Strict" (deep-inspection -> decrypt-except-certpinned)
+  [OK] decryption-rule "decrypt-Finance_Authenticated_Web" for policy "Finance_Authenticated_Web" (deep-inspection -> decrypt-except-certpinned)
+  [OK] decryption-rule "decrypt-Inbound_WebServer_Protected" for policy "Inbound_WebServer_Protected" (deep-inspection -> decrypt-except-certpinned)
+  [OK] decryption-rule "decrypt-FIM-TECH-Cruises-Internet" for policy "FIM-TECH-Cruises-Internet" (deep-inspection -> decrypt-except-certpinned)
+  [OK] decryption-rule "decrypt-Finance-Mixed-Groups-ERP-Access" for policy "Finance-Mixed-Groups-ERP-Access" (deep-inspection -> decrypt-except-certpinned)
+  [OK] decryption-rule "decrypt-Mixed-Users-VPN-Internet" for policy "Mixed-Users-VPN-Internet" (deep-inspection -> decrypt-except-certpinned)
+
+--- Skipped Objects ---
+  [SKIP] address "Server_Farm_Primary" (orphan)
+  [SKIP] address "Server_Farm_Secondary" (orphan)
+  [SKIP] address "DC_Rostock_Primary" (orphan)
+  [SKIP] address "DC_Hamburg_Secondary" (orphan)
+  [SKIP] address "Mgmt_Network" (orphan)
+  [SKIP] address "Backup_Server_01" (orphan)
+  [SKIP] address "Backup_Server_02" (orphan)
+  [SKIP] address "Server.Farm.Production" (orphan)
+  [SKIP] address "HR & Payroll Servers" (orphan)
+  [SKIP] address "DMZ-Servers(Primary)" (orphan)
+  [SKIP] address "Branch@Office-LAN" (orphan)
+  [SKIP] address "DC_Rostock/Standby" (orphan)
+  [SKIP] address "Backup#Servers-Orphan" (orphan)
+  [SKIP] address "Finance+Controllers" (orphan)
+  [SKIP] address "Mgmt:Network-Orphan" (orphan)
+  [SKIP] address "FQDN-corp-example-com" (orphan)
+  [SKIP] address "api.vendor.prod" (orphan)
+  [SKIP] address "sso.company.com" (orphan)
+  [SKIP] address "update.service@prod" (orphan)
+  [SKIP] address "api.vendor(test)" (orphan)
+  [SKIP] address "Orphan_FQDN_UpdateSrv" (orphan)
+  [SKIP] address "Range Finance [Prod]" (orphan)
+  [SKIP] address "DHCP-Pool/Guest" (orphan)
+  [SKIP] address "IP Range+DMZ Servers" (orphan)
+  [SKIP] address "Unused(Test)Range" (orphan)
+  [SKIP] address "Orphan_Subnet_01" (orphan)
+  [SKIP] address "legacy.server.old" (orphan)
+  [SKIP] address-group "Prod_Server_Groups" (orphan)
+  [SKIP] address-group "DC_Servers_All" (orphan)
+  [SKIP] address-group "Mgmt_and_Backup_Grp" (orphan)
+  [SKIP] address-group "Finance & HR Group" (orphan)
+  [SKIP] address-group "Internet.DMZ.Group" (orphan)
+  [SKIP] address-group "Cloud_Services_Grp" (orphan)
+  [SKIP] address-group "Legacy_Servers_Orphan" (orphan)
+  [SKIP] address-group "Unused#Servers(Lab)" (orphan)
+  [SKIP] address-group "All_Servers_Grp" (orphan)
+  [SKIP] address-group "Internal_Office(Users)" (orphan)
+  [SKIP] address-group "DMZ/Internet-Group" (orphan)
+  [SKIP] address-group "External+Resources-Grp" (orphan)
+  [SKIP] address-group "Orphan@Parent.Grp" (orphan)
+  [SKIP] address-group "Unused [Nested & Groups]" (orphan)
+  [SKIP] service "Custom.HTTP-8080" (orphan)
+  [SKIP] service "Oracle DB+Listener" (orphan)
+  [SKIP] service "SAP/HANA-Port" (orphan)
+  [SKIP] service "MQTT@IoT" (orphan)
+  [SKIP] service "Custom RDP(TS)" (orphan)
+  [SKIP] service "App:Server 8443" (orphan)
+  [SKIP] service "SNMP#Monitor" (orphan)
+  [SKIP] service "SSH [Admin]" (orphan)
+  [SKIP] service "SMTP & Submission" (orphan)
+  [SKIP] service "IMAP.Secure" (orphan)
+  [SKIP] service "HighPorts Range[TCP]" (orphan)
+  [SKIP] service "Mgmt Ports+Range" (orphan)
+  [SKIP] service "Dynamic/UDP Range" (orphan)
+  [SKIP] service "Voice RTP+Ports" (orphan)
+  [SKIP] service "MSSQL @ DB Range" (orphan)
+  [SKIP] service "VNC Range(Multi)" (orphan)
+  [SKIP] service "PCoIP.VMware Horizon" (orphan)
+  [SKIP] service "Orphan_TCP_Service" (orphan)
+  [SKIP] service "legacy.app.port" (orphan)
+  [SKIP] service "Unused#Port[Range]" (orphan)
+  [SKIP] service "Test:UDP-Range" (orphan)
+
+--- Warnings ---
+  [WARN] IP range "IP_Range_Finance" expanded to 6 CIDRs with wrapper group "IP_Range_Finance"
+  [WARN] IP range "Internal_Networks" expanded to 46 CIDRs with wrapper group "Internal_Networks"
+  [WARN] Policy "RAVPN-intern-High-Bandwidth": groups mapped to local-database group-list [ RAVPN_intern ]
+  [WARN] Policy "RAVPN-intern-High-Bandwidth": NAT enabled - requires separate CGNAT config in Versa
+  [WARN] Policy "RAVPN-intern-High-Bandwidth": ssl-ssh-profile "deep-inspection" -> decryption policy rule generated
+  [WARN] Policy "LAN_Internet_Filtered": NAT enabled - requires separate CGNAT config in Versa
+  [WARN] Policy "LAN_Internet_Filtered": ssl-ssh-profile "certificate-inspection" -> skipped (Versa filters HTTPS natively)
+  [WARN] Policy "DMZ_Outbound_Strict": ssl-ssh-profile "deep-inspection" -> decryption policy rule generated
+  [WARN] Policy "Guest_Monitor_Only": NAT enabled - requires separate CGNAT config in Versa
+  [WARN] Policy "Finance_Authenticated_Web": groups mapped to local-database group-list [ Finance_Users ]
+  [WARN] Policy "Finance_Authenticated_Web": NAT enabled - requires separate CGNAT config in Versa
+  [WARN] Policy "Finance_Authenticated_Web": ssl-ssh-profile "deep-inspection" -> decryption policy rule generated
+  [WARN] Policy "Inbound_WebServer_Protected": ssl-ssh-profile "deep-inspection" -> decryption policy rule generated
+  [WARN] Policy "Block_Social_Media": NAT enabled - requires separate CGNAT config in Versa
+  [WARN] Policy "Block_Social_Media": ssl-ssh-profile "certificate-inspection" -> skipped (Versa filters HTTPS natively)
+  [WARN] Policy renamed: "VPN.Users(External).HTTPS-Access" -> "VPN_Users_External_HTTPS-Access"
+  [WARN] Policy renamed: "Finance & HR Internet Access" -> "Finance_HR_Internet_Access"
+  [WARN] Policy "Finance & HR Internet Access": NAT enabled - requires separate CGNAT config in Versa
+  [WARN] Policy renamed: "Guest@WiFi-Policy" -> "Guest_WiFi-Policy"
+  [WARN] Policy "Guest@WiFi-Policy": NAT enabled - requires separate CGNAT config in Versa
+  [WARN] Policy renamed: "RAVPN-PRE_VeryLongPolicyNameThatDefinitelyExceedsTheVersa63CharacterLimitForFirewallRuleNaming" -> "RAVPN-PRE_VeryLongPolicyNameThatDefinitelyExceedsTheVersa63Char"
+  [WARN] Policy "IT-SysAdmin-Internal-Access": groups mapped to local-database group-list [ FW_IT_SysAdmin ]
+  [WARN] Policy "FIM-TECH-Cruises-Internet": groups mapped to local-database group-list [ FIM-TECH-Cruises-Division ]
+  [WARN] Policy "FIM-TECH-Cruises-Internet": NAT enabled - requires separate CGNAT config in Versa
+  [WARN] Policy "FIM-TECH-Cruises-Internet": ssl-ssh-profile "deep-inspection" -> decryption policy rule generated
+  [WARN] Policy "NetAdmin-and-SysAdmin-Mgmt-Access": groups mapped to local-database group-list [ FW_NetworkAdmins FW_IT_SysAdmin ]
+  [WARN] Policy "Finance-Mixed-Groups-ERP-Access": groups mapped to local-database group-list [ FW_Finance_External FIM-ORG-Yield_Management IT_Enterprise_Applications ]
+  [WARN] Policy "Finance-Mixed-Groups-ERP-Access": NAT enabled - requires separate CGNAT config in Versa
+  [WARN] Policy "Finance-Mixed-Groups-ERP-Access": ssl-ssh-profile "deep-inspection" -> decryption policy rule generated
+  [WARN] Policy "dobbermann-martin-SSH-Access": users mapped to local-database user-list [ dobbermann_martin ]
+  [WARN] Policy "Named-Users-DevDB-Access": users mapped to local-database user-list [ esser_andreas zenglein_georg rossbach_maximilian ]
+  [WARN] Policy "Mixed-Users-VPN-Internet": users mapped to local-database user-list [ dobbermann_martin hallidri_refat seifert_ole Oswald_Martin Karsten_Kubeler ]
+  [WARN] Policy "Mixed-Users-VPN-Internet": NAT enabled - requires separate CGNAT config in Versa
+  [WARN] Policy "Mixed-Users-VPN-Internet": ssl-ssh-profile "deep-inspection" -> decryption policy rule generated
+  [WARN] Policy "Backup-Admin-Plus-Named-Users": groups mapped to local-database group-list [ FW_BackupAdmins ]
+  [WARN] Policy "Backup-Admin-Plus-Named-Users": users mapped to local-database user-list [ dobbermann_martin wolfram_kristian ]
+  [WARN] Policy "CMG-Maritime-Named-Users-Internet": groups mapped to local-database group-list [ CMG_-_DISTLIST_RAAS FIM-TECH-Maritime-Division ]
+  [WARN] Policy "CMG-Maritime-Named-Users-Internet": users mapped to local-database user-list [ perkins_derek valley_ryan schroeder_michael ]
+  [WARN] Policy "CMG-Maritime-Named-Users-Internet": NAT enabled - requires separate CGNAT config in Versa
+  [WARN] Policy "CMG-Maritime-Named-Users-Internet": ssl-ssh-profile "certificate-inspection" -> skipped (Versa filters HTTPS natively)
+  [WARN] Policy "FIM-ORG-IT-Business-Access": groups mapped to local-database group-list [ CN_FIM-ORG-IT_Business_OU_Groups_OU_Corp_DC_corp_DC_local ]
+  [WARN] Policy "FIM-ORG-IT-Business-Access": NAT enabled - requires separate CGNAT config in Versa
+  [WARN] Policy "External-Vendor-Amptown-Entertainment": groups mapped to local-database group-list [ CN_webvpn_external_amptown_OU_Amptown_System_Company_GmbH_OU_Fr FIM-TECH-Entertainment-Group FW_Siemens_External ]
+  [WARN] Policy "External-Vendor-Amptown-Entertainment": NAT enabled - requires separate CGNAT config in Versa
+  [WARN] Policy "External-Vendor-Amptown-Entertainment": ssl-ssh-profile "certificate-inspection" -> skipped (Versa filters HTTPS natively)
+  [WARN] Policy "RemoteVendors-MultiGroup-Access": groups mapped to local-database group-list [ FW_RemoteVendors_All ]
+  [WARN] Decrypt profile uses template variables for certificate/ca-chain — provision in Versa Director
+
