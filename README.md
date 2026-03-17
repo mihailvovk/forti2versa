@@ -164,7 +164,7 @@ For fine-grained control over zone mapping, schedules, and security profiles, cr
       "IPS_monitor_all": "All Attack Rules"
     },
     "webfilter-profile": {
-      "Shore_Strict_Allow": "corporate",
+      "Strict_Web_Filter": "corporate",
       "Block_All_Web": "block_all"
     },
     "dnsfilter-profile": {
@@ -210,7 +210,7 @@ Every FortiGate interface referenced in firewall policies needs a corresponding 
 From the FortiGate CLI or GUI, export the full configuration backup (`.conf` file). The file should start with a version header:
 
 ```
-#config-version=FGT60D-5.02-FW-build670-140314:opmode=0:vdom=0:user=admin
+#config-version=FGTXXXX-7.0-FW-buildNNNN-YYMMDD:opmode=0:vdom=0:user=admin
 ```
 
 ### 2. Run Conversion
