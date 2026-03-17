@@ -459,7 +459,7 @@ func (c *VersaConverter) getURLFilterPatterns(wf *WebfilterProfile) (blacklist, 
 	}
 	for _, entry := range table.Entries {
 		pattern := fortiURLToVersaRegex(entry.URL, entry.Type)
-		quoted := fmt.Sprintf("%q", pattern)
+		quoted := `"` + pattern + `"`
 		switch entry.Action {
 		case "block":
 			blacklist = append(blacklist, quoted)
@@ -478,16 +478,9 @@ func fortiURLToVersaRegex(url, urlType string) string {
 	case "regex":
 		return url
 	case "simple":
-		// Simple URL: escape dots, prefix with .*
-		escaped := strings.ReplaceAll(url, ".", `\.`)
-		return ".*" + escaped
+		return ".*" + url
 	default: // "wildcard" or unset
-		// Wildcard URL: replace * with .*, escape dots in remainder
-		// First replace * with a placeholder, escape dots, then restore .*
-		result := strings.ReplaceAll(url, "*", "\x00")
-		result = strings.ReplaceAll(result, ".", `\.`)
-		result = strings.ReplaceAll(result, "\x00", ".*")
-		return result
+		return strings.ReplaceAll(url, "*", ".*")
 	}
 }
 

@@ -640,8 +640,8 @@ end
 	c := NewVersaConverter(p, cfg)
 	out := c.Convert()
 
-	// Should have blacklist patterns (note: %q formatting double-escapes backslashes)
-	if !strings.Contains(out, `blacklist patterns [ ".*facebook\\.com" ".*gambling\\.com" "(xxx|porn)" ]`) {
+	// Should have blacklist patterns (no backslash escaping in URLs)
+	if !strings.Contains(out, `blacklist patterns [ ".*facebook.com" ".*gambling.com" "(xxx|porn)" ]`) {
 		t.Errorf("missing or incorrect blacklist patterns in output")
 	}
 	// youtube is monitor, should NOT be in blacklist
@@ -651,7 +651,7 @@ end
 		}
 	}
 	// Bug 1: Monitor patterns merged into main profile whitelist
-	if !strings.Contains(out, `whitelist patterns [ ".*\\.safe-site\\.com" ".*youtube\\.com" ]`) {
+	if !strings.Contains(out, `whitelist patterns [ ".*.safe-site.com" ".*youtube.com" ]`) {
 		t.Errorf("missing merged whitelist patterns (exempt + monitor) in output")
 	}
 	// Should still have category block
@@ -679,9 +679,9 @@ func TestFortiURLToVersaRegex(t *testing.T) {
 	tests := []struct {
 		url, typ, want string
 	}{
-		{"*facebook.com", "wildcard", `.*facebook\.com`},
-		{"*.corp.example.com", "wildcard", `.*\.corp\.example\.com`},
-		{"gambling.com", "simple", `.*gambling\.com`},
+		{"*facebook.com", "wildcard", `.*facebook.com`},
+		{"*.corp.example.com", "wildcard", `.*.corp.example.com`},
+		{"gambling.com", "simple", `.*gambling.com`},
 		{"(xxx|porn)", "regex", "(xxx|porn)"},
 	}
 	for _, tt := range tests {
