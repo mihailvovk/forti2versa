@@ -25,6 +25,7 @@ type FortiGateParser struct {
 	OnetimeSchedules   map[string]*OnetimeSchedule
 	AVProfiles         map[string]*AVProfile
 	DNSFilterProfiles  map[string]*DNSFilterObj
+	IPSSensors         map[string]*IPSSensor
 }
 
 func NewFortiGateParser(text string) *FortiGateParser {
@@ -41,6 +42,7 @@ func NewFortiGateParser(text string) *FortiGateParser {
 		OnetimeSchedules:  make(map[string]*OnetimeSchedule),
 		AVProfiles:        make(map[string]*AVProfile),
 		DNSFilterProfiles: make(map[string]*DNSFilterObj),
+		IPSSensors:        make(map[string]*IPSSensor),
 	}
 	p.parse(text)
 	return p
@@ -134,6 +136,8 @@ func (p *FortiGateParser) parse(text string) {
 			i = p.parseAVProfileBlock(lines, i+1)
 		case line == "config dnsfilter profile":
 			i = p.parseDNSFilterProfileBlock(lines, i+1)
+		case line == "config ips sensor":
+			i = p.parseIPSSensorBlock(lines, i+1)
 		case line == "config firewall policy":
 			i = p.parsePolicyBlock(lines, i+1)
 		default:
@@ -1195,6 +1199,96 @@ func (p *FortiGateParser) parseOnetimeScheduleBlock(lines []string, start int) i
 					obj.Start = strings.Trim(rest, `"`)
 				case "end":
 					obj.End = strings.Trim(rest, `"`)
+				}
+			}
+		}
+		i++
+	}
+	return i
+}
+
+// --- IPS Sensors ---
+
+func (p *FortiGateParser) parseIPSSensorBlock(lines []string, start int) int {
+	i := start
+	depth := 1
+	var obj *IPSSensor
+	inEntries := false
+	var entry *IPSSensorEntry
+	for i < len(lines) && depth > 0 {
+		s := skipComment(lines[i])
+		if s == "" {
+			i++
+			continue
+		}
+		if s == "end" {
+			if entry != nil && obj != nil {
+				obj.Entries = append(obj.Entries, *entry)
+				entry = nil
+			}
+			depth--
+			if depth == 1 {
+				inEntries = false
+			}
+			if depth == 0 {
+				if obj != nil {
+					p.IPSSensors[obj.Name] = obj
+				}
+				return i + 1
+			}
+			i++
+			continue
+		}
+		if strings.HasPrefix(s, "config ") {
+			depth++
+			if strings.Contains(s, "entries") {
+				inEntries = true
+			}
+			i++
+			continue
+		}
+		if strings.HasPrefix(s, "edit ") && depth == 1 {
+			if obj != nil {
+				p.IPSSensors[obj.Name] = obj
+			}
+			name := parseQuotedValues(s[5:])[0]
+			obj = &IPSSensor{Name: name}
+			i++
+			continue
+		}
+		if strings.HasPrefix(s, "edit ") && inEntries {
+			if entry != nil && obj != nil {
+				obj.Entries = append(obj.Entries, *entry)
+			}
+			entry = &IPSSensorEntry{}
+			i++
+			continue
+		}
+		if s == "next" {
+			if inEntries && entry != nil && obj != nil {
+				obj.Entries = append(obj.Entries, *entry)
+				entry = nil
+			} else if !inEntries && depth == 1 {
+				if obj != nil {
+					p.IPSSensors[obj.Name] = obj
+					obj = nil
+				}
+			}
+			i++
+			continue
+		}
+		if strings.HasPrefix(s, "set ") {
+			parts := splitN(s, 3)
+			if len(parts) >= 3 {
+				key := parts[1]
+				vals := parseQuotedValues(parts[2])
+				switch {
+				case key == "comment" && obj != nil && !inEntries:
+					obj.Comment = vals[0]
+				case key == "severity" && entry != nil:
+					entry.Severities = vals
+				case key == "action" && entry != nil:
+					entry.Action = vals[0]
 				}
 			}
 		}

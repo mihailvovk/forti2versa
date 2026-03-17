@@ -116,6 +116,17 @@ type AVProfile struct {
 	Protocols []string // "http", "ftp", "smtp", "imap", "pop3"
 }
 
+type IPSSensorEntry struct {
+	Severities []string // "critical", "high", "medium", "low", "info"
+	Action     string   // "drop", "reset", "pass"
+}
+
+type IPSSensor struct {
+	Name    string
+	Comment string
+	Entries []IPSSensorEntry
+}
+
 type PolicyObj struct {
 	ID               int
 	Name             string

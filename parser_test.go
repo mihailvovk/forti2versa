@@ -448,3 +448,75 @@ end
 		t.Errorf("end: got %q", sched.End)
 	}
 }
+
+func TestParseIPSSensor(t *testing.T) {
+	text := `
+config ips sensor
+    edit "IPS_drop_default"
+        set comment "Block critical and high"
+        config entries
+            edit 1
+                set severity critical high
+                set action drop
+            next
+            edit 2
+                set severity medium
+                set action reset
+            next
+            edit 3
+                set severity low info
+                set action pass
+            next
+        end
+    next
+    edit "IPS_monitor"
+        config entries
+            edit 1
+                set severity critical high medium low info
+                set action pass
+            next
+        end
+    next
+end
+`
+	p := NewFortiGateParser(text)
+	if len(p.IPSSensors) != 2 {
+		t.Fatalf("expected 2 IPS sensors, got %d", len(p.IPSSensors))
+	}
+
+	sensor := p.IPSSensors["IPS_drop_default"]
+	if sensor == nil {
+		t.Fatal("IPS_drop_default not found")
+	}
+	if sensor.Comment != "Block critical and high" {
+		t.Errorf("comment: got %q", sensor.Comment)
+	}
+	if len(sensor.Entries) != 3 {
+		t.Fatalf("entries: got %d, want 3", len(sensor.Entries))
+	}
+	// Entry 0: critical + high -> drop
+	e0 := sensor.Entries[0]
+	if len(e0.Severities) != 2 || e0.Severities[0] != "critical" || e0.Severities[1] != "high" {
+		t.Errorf("entry 0 severities: got %v", e0.Severities)
+	}
+	if e0.Action != "drop" {
+		t.Errorf("entry 0 action: got %q", e0.Action)
+	}
+	// Entry 1: medium -> reset
+	e1 := sensor.Entries[1]
+	if len(e1.Severities) != 1 || e1.Severities[0] != "medium" {
+		t.Errorf("entry 1 severities: got %v", e1.Severities)
+	}
+	if e1.Action != "reset" {
+		t.Errorf("entry 1 action: got %q", e1.Action)
+	}
+
+	// Monitor sensor: all pass
+	monitor := p.IPSSensors["IPS_monitor"]
+	if len(monitor.Entries) != 1 {
+		t.Fatalf("monitor entries: got %d", len(monitor.Entries))
+	}
+	if monitor.Entries[0].Action != "pass" {
+		t.Errorf("monitor action: got %q", monitor.Entries[0].Action)
+	}
+}

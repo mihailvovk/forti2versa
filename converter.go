@@ -993,6 +993,7 @@ func (c *VersaConverter) emitAppBlockRule(pol *PolicyObj, vname string) {
 
 // --- Policies ---
 func (c *VersaConverter) convertPolicies() {
+	deepProfiles := buildDeepProfiles(c.parser.SSLSSHProfiles)
 	for _, pol := range c.parser.Policies {
 		vname := c.sanitizer.Sanitize(pol.Name)
 		if c.sanitizer.WasRenamed(pol.Name) {
@@ -1087,7 +1088,7 @@ func (c *VersaConverter) convertPolicies() {
 			c.Report.AddWarning(fmt.Sprintf("Policy \"%s\": NAT enabled - requires separate CGNAT config in Versa", pol.Name))
 		}
 		if pol.SSLSSHProfile != "" {
-			if pol.SSLSSHProfile == "deep-inspection" || pol.SSLSSHProfile == "SSL_Inspection" {
+			if deepProfiles[pol.SSLSSHProfile] {
 				c.Report.AddWarning(fmt.Sprintf("Policy \"%s\": ssl-ssh-profile \"%s\" -> decryption policy rule generated", pol.Name, pol.SSLSSHProfile))
 			} else {
 				c.Report.AddWarning(fmt.Sprintf("Policy \"%s\": ssl-ssh-profile \"%s\" -> skipped (Versa filters HTTPS natively)", pol.Name, pol.SSLSSHProfile))
@@ -1103,7 +1104,7 @@ func (c *VersaConverter) convertPolicies() {
 
 // --- Decryption Policies ---
 func (c *VersaConverter) convertDecryptionPolicies() {
-	deepProfiles := map[string]bool{"deep-inspection": true, "SSL_Inspection": true}
+	deepProfiles := buildDeepProfiles(c.parser.SSLSSHProfiles)
 
 	hasDeep := false
 	for _, pol := range c.parser.Policies {
@@ -1333,6 +1334,81 @@ func classifyAVProfile(protocols []string) string {
 	}
 }
 
+// classifyIPSSensor determines the best Versa IPS profile based on sensor entries.
+// It counts how many severity levels are actively blocked (drop/reset):
+//   - 0 blocked → "All Attack Rules" (monitoring only)
+//   - 1 blocked (critical only) → "Client Protection"
+//   - 2 blocked (critical+high) → "Versa Recommended Profile"
+//   - 3+ blocked → "Server Protection"
+func classifyIPSSensor(sensor *IPSSensor) string {
+	if len(sensor.Entries) == 0 {
+		return "Versa Recommended Profile"
+	}
+
+	// Build severity → highest action map (drop > reset > pass)
+	sevAction := make(map[string]string)
+	for _, entry := range sensor.Entries {
+		for _, sev := range entry.Severities {
+			sev = strings.ToLower(sev)
+			cur := sevAction[sev]
+			if actionRank(entry.Action) > actionRank(cur) {
+				sevAction[sev] = entry.Action
+			}
+		}
+	}
+
+	// Count severity levels with blocking action (drop or reset)
+	blocked := 0
+	for _, sev := range []string{"critical", "high", "medium", "low", "info"} {
+		act := sevAction[sev]
+		if act == "drop" || act == "reset" {
+			blocked++
+		}
+	}
+
+	switch {
+	case blocked == 0:
+		return "All Attack Rules"
+	case blocked == 1:
+		return "Client Protection"
+	case blocked == 2:
+		return "Versa Recommended Profile"
+	default:
+		return "Server Protection"
+	}
+}
+
+// actionRank returns numeric rank for IPS action comparison (higher = more aggressive).
+func actionRank(action string) int {
+	switch action {
+	case "drop":
+		return 3
+	case "reset":
+		return 2
+	case "pass":
+		return 1
+	default:
+		return 0
+	}
+}
+
+// buildDeepProfiles returns a set of SSL/SSH profile names that have any protocol
+// with deep-inspection status. The built-in "deep-inspection" is always included.
+func buildDeepProfiles(profiles map[string]*SSLSSHProfile) map[string]bool {
+	deep := make(map[string]bool)
+	for name, prof := range profiles {
+		for _, proto := range prof.Protocols {
+			if proto.Status == "deep-inspection" {
+				deep[name] = true
+				break
+			}
+		}
+	}
+	// Built-in "deep-inspection" may not have a config definition
+	deep["deep-inspection"] = true
+	return deep
+}
+
 // SuggestProfileMappings generates auto-detected profile mappings from parsed config.
 func SuggestProfileMappings(fg *FortiGateParser) map[string]map[string]string {
 	suggestions := make(map[string]map[string]string)
@@ -1362,11 +1438,15 @@ func SuggestProfileMappings(fg *FortiGateParser) map[string]map[string]string {
 		suggestions["av-profile"] = avMap
 	}
 
-	// Auto-map IPS sensors -> Versa Recommended Profile
+	// Auto-map IPS sensors based on parsed sensor definitions
 	if len(ipsSet) > 0 {
 		ipsMap := make(map[string]string)
 		for name := range ipsSet {
-			ipsMap[name] = "Versa Recommended Profile"
+			if sensor, ok := fg.IPSSensors[name]; ok {
+				ipsMap[name] = classifyIPSSensor(sensor)
+			} else {
+				ipsMap[name] = "Versa Recommended Profile"
+			}
 		}
 		suggestions["ips-sensor"] = ipsMap
 	}
@@ -1395,20 +1475,16 @@ func (c *VersaConverter) emitSecurityProfiles(rp string, pol *PolicyObj) {
 		c.Report.AddInfo(fmt.Sprintf("Policy \"%s\": dnsfilter-profile \"%s\" -> categories merged into URL filtering profile", pol.Name, pol.DNSFilterProfile))
 	}
 
-	// IPS — explicit mapping takes priority, then auto-map
+	// IPS — explicit mapping takes priority, then auto-classify from parsed sensor
 	if pol.IPSSensor != "" {
 		if ipsMap, ok := spMap["ips-sensor"]; ok {
 			if versaName, ok := ipsMap[pol.IPSSensor]; ok {
 				c.output = append(c.output, fmt.Sprintf("%s set security-profile ips predefined-ips-profile \"%s\"", rp, versaName))
 			} else {
-				versaIPS := "Versa Recommended Profile"
-				c.Report.AddInfo(fmt.Sprintf("Policy \"%s\": ips-sensor \"%s\" auto-mapped to \"%s\"", pol.Name, pol.IPSSensor, versaIPS))
-				c.output = append(c.output, fmt.Sprintf("%s set security-profile ips predefined-ips-profile \"%s\"", rp, versaIPS))
+				c.autoMapIPS(rp, pol)
 			}
 		} else {
-			versaIPS := "Versa Recommended Profile"
-			c.Report.AddInfo(fmt.Sprintf("Policy \"%s\": ips-sensor \"%s\" auto-mapped to \"%s\"", pol.Name, pol.IPSSensor, versaIPS))
-			c.output = append(c.output, fmt.Sprintf("%s set security-profile ips predefined-ips-profile \"%s\"", rp, versaIPS))
+			c.autoMapIPS(rp, pol)
 		}
 	}
 
@@ -1447,6 +1523,18 @@ func (c *VersaConverter) autoMapAV(rp string, pol *PolicyObj) {
 		c.Report.AddInfo(fmt.Sprintf("Policy \"%s\": av-profile \"%s\" auto-mapped to \"%s\" (default — no protocol info)", pol.Name, pol.AVProfile, versaAV))
 	}
 	c.output = append(c.output, fmt.Sprintf("%s set security-profile antivirus predefined-av-profile \"%s\"", rp, versaAV))
+}
+
+func (c *VersaConverter) autoMapIPS(rp string, pol *PolicyObj) {
+	var versaIPS string
+	if sensor, ok := c.parser.IPSSensors[pol.IPSSensor]; ok {
+		versaIPS = classifyIPSSensor(sensor)
+		c.Report.AddInfo(fmt.Sprintf("Policy \"%s\": ips-sensor \"%s\" auto-classified to \"%s\"", pol.Name, pol.IPSSensor, versaIPS))
+	} else {
+		versaIPS = "Versa Recommended Profile"
+		c.Report.AddInfo(fmt.Sprintf("Policy \"%s\": ips-sensor \"%s\" auto-mapped to \"%s\" (default — sensor definition not found)", pol.Name, pol.IPSSensor, versaIPS))
+	}
+	c.output = append(c.output, fmt.Sprintf("%s set security-profile ips predefined-ips-profile \"%s\"", rp, versaIPS))
 }
 
 // --- Address Match ---

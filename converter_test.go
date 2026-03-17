@@ -486,6 +486,10 @@ func TestConvertDecryptionExemptionsDropped(t *testing.T) {
 	text := `
 config firewall ssl-ssh-profile
     edit "deep-inspection"
+        config https
+            set ports 443
+            set status deep-inspection
+        end
         set ssl-exempt-categories 72 7
     next
 end
@@ -534,6 +538,10 @@ config firewall wildcard-fqdn custom
 end
 config firewall ssl-ssh-profile
     edit "SSL_Inspection"
+        config https
+            set ports 443
+            set status deep-inspection
+        end
         config ssl-exempt
             edit 1
                 set type wildcard-fqdn
@@ -1365,5 +1373,239 @@ end
 	// Should NOT have reputation-action-map (app-list doesn't block cat 6)
 	if strings.Contains(out, "reputation-action-map") {
 		t.Error("reputation-action-map should not appear when app-list does not block category 6")
+	}
+}
+
+func TestClassifyIPSSensor(t *testing.T) {
+	tests := []struct {
+		name    string
+		sensor  *IPSSensor
+		want    string
+	}{
+		{
+			name:   "empty entries",
+			sensor: &IPSSensor{Name: "empty"},
+			want:   "Versa Recommended Profile",
+		},
+		{
+			name: "monitor only (all pass)",
+			sensor: &IPSSensor{Name: "monitor", Entries: []IPSSensorEntry{
+				{Severities: []string{"critical", "high", "medium", "low", "info"}, Action: "pass"},
+			}},
+			want: "All Attack Rules",
+		},
+		{
+			name: "critical only blocked",
+			sensor: &IPSSensor{Name: "minimal", Entries: []IPSSensorEntry{
+				{Severities: []string{"critical"}, Action: "drop"},
+				{Severities: []string{"high", "medium", "low", "info"}, Action: "pass"},
+			}},
+			want: "Client Protection",
+		},
+		{
+			name: "critical+high blocked",
+			sensor: &IPSSensor{Name: "balanced", Entries: []IPSSensorEntry{
+				{Severities: []string{"critical", "high"}, Action: "drop"},
+				{Severities: []string{"medium"}, Action: "pass"},
+			}},
+			want: "Versa Recommended Profile",
+		},
+		{
+			name: "critical+high+medium blocked (aggressive)",
+			sensor: &IPSSensor{Name: "aggressive", Entries: []IPSSensorEntry{
+				{Severities: []string{"critical", "high", "medium"}, Action: "drop"},
+				{Severities: []string{"low"}, Action: "pass"},
+			}},
+			want: "Server Protection",
+		},
+		{
+			name: "all blocked",
+			sensor: &IPSSensor{Name: "block-all", Entries: []IPSSensorEntry{
+				{Severities: []string{"critical", "high", "medium", "low", "info"}, Action: "drop"},
+			}},
+			want: "Server Protection",
+		},
+		{
+			name: "reset counts as blocked",
+			sensor: &IPSSensor{Name: "reset", Entries: []IPSSensorEntry{
+				{Severities: []string{"critical"}, Action: "reset"},
+				{Severities: []string{"high"}, Action: "drop"},
+			}},
+			want: "Versa Recommended Profile",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyIPSSensor(tt.sensor)
+			if got != tt.want {
+				t.Errorf("classifyIPSSensor(%s) = %q, want %q", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestConvertIPSAutoClassify(t *testing.T) {
+	text := `
+config ips sensor
+    edit "IPS_aggressive"
+        config entries
+            edit 1
+                set severity critical high medium
+                set action drop
+            next
+            edit 2
+                set severity low
+                set action pass
+            next
+        end
+    next
+end
+config firewall policy
+    edit 1
+        set name "IPS-Auto-Test"
+        set srcintf "port1"
+        set dstintf "wan1"
+        set srcaddr "all"
+        set dstaddr "all"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+        set logtraffic all
+        set utm-status enable
+        set ips-sensor "IPS_aggressive"
+    next
+end
+`
+	p := NewFortiGateParser(text)
+	cfg := newTestConfig()
+	// Remove manual IPS mapping to test auto-classification
+	delete(cfg.SecurityProfileMap, "ips-sensor")
+	c := NewVersaConverter(p, cfg)
+	out := c.Convert()
+
+	// 3 severities blocked -> Server Protection
+	if !strings.Contains(out, `predefined-ips-profile "Server Protection"`) {
+		t.Errorf("expected Server Protection for aggressive sensor, got:\n%s", out)
+	}
+}
+
+func TestConvertIPSAutoClassifyFallback(t *testing.T) {
+	text := `
+config firewall policy
+    edit 1
+        set name "IPS-Fallback-Test"
+        set srcintf "port1"
+        set dstintf "wan1"
+        set srcaddr "all"
+        set dstaddr "all"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+        set logtraffic all
+        set utm-status enable
+        set ips-sensor "unknown-sensor"
+    next
+end
+`
+	p := NewFortiGateParser(text)
+	cfg := newTestConfig()
+	delete(cfg.SecurityProfileMap, "ips-sensor")
+	c := NewVersaConverter(p, cfg)
+	out := c.Convert()
+
+	// Sensor not defined -> fallback to Versa Recommended Profile
+	if !strings.Contains(out, `predefined-ips-profile "Versa Recommended Profile"`) {
+		t.Errorf("expected Versa Recommended Profile for unknown sensor, got:\n%s", out)
+	}
+}
+
+func TestConvertDynamicSSLDetection(t *testing.T) {
+	text := `
+config firewall ssl-ssh-profile
+    edit "Custom_Deep"
+        config https
+            set ports 443
+            set status deep-inspection
+        end
+    next
+    edit "Custom_CertOnly"
+        config https
+            set ports 443
+            set status certificate-inspection
+        end
+    next
+end
+config firewall policy
+    edit 1
+        set name "Dynamic-SSL-Deep"
+        set srcintf "port1"
+        set dstintf "wan1"
+        set srcaddr "all"
+        set dstaddr "all"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+        set logtraffic all
+        set ssl-ssh-profile "Custom_Deep"
+    next
+    edit 2
+        set name "Dynamic-SSL-CertOnly"
+        set srcintf "port1"
+        set dstintf "wan1"
+        set srcaddr "all"
+        set dstaddr "all"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+        set logtraffic all
+        set ssl-ssh-profile "Custom_CertOnly"
+    next
+end
+`
+	p := NewFortiGateParser(text)
+	c := NewVersaConverter(p, newTestConfig())
+	out := c.Convert()
+
+	// Custom_Deep should generate decrypt rule
+	if !strings.Contains(out, "decrypt-LAN-Zone-to-WAN-Zone") {
+		t.Error("missing decrypt rule for dynamically detected deep-inspection profile")
+	}
+
+	// Check report: Custom_Deep should say "decryption policy rule generated"
+	report := c.Report.Render()
+	if !strings.Contains(report, `ssl-ssh-profile "Custom_Deep" -> decryption policy rule generated`) {
+		t.Error("missing report for Custom_Deep decryption")
+	}
+	// Custom_CertOnly should say "skipped"
+	if !strings.Contains(report, `ssl-ssh-profile "Custom_CertOnly" -> skipped`) {
+		t.Error("Custom_CertOnly should be skipped (no deep-inspection)")
+	}
+}
+
+func TestConvertBuiltinDeepInspectionNoDefinition(t *testing.T) {
+	// "deep-inspection" referenced by policy but no config definition in the config file
+	text := `
+config firewall policy
+    edit 1
+        set name "Builtin-Deep"
+        set srcintf "port1"
+        set dstintf "wan1"
+        set srcaddr "all"
+        set dstaddr "all"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+        set logtraffic all
+        set ssl-ssh-profile "deep-inspection"
+    next
+end
+`
+	p := NewFortiGateParser(text)
+	c := NewVersaConverter(p, newTestConfig())
+	out := c.Convert()
+
+	// Should still generate decrypt rule for built-in deep-inspection
+	if !strings.Contains(out, "decrypt-LAN-Zone-to-WAN-Zone") {
+		t.Error("missing decrypt rule for built-in deep-inspection with no config definition")
 	}
 }
