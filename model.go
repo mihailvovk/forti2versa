@@ -39,10 +39,11 @@ type WebfilterCategory struct {
 }
 
 type WebfilterProfile struct {
-	Name           string
-	Comment        string
-	Categories     []WebfilterCategory
-	URLFilterTable int
+	Name             string
+	Comment          string
+	Categories       []WebfilterCategory
+	URLFilterTable   int
+	SandboxBlacklist bool // "set blacklist enable" — FortiSandbox malicious URL blocking
 }
 
 type AppListEntry struct {
@@ -134,8 +135,9 @@ type PolicyObj struct {
 	DstIntf          string
 	SrcAddr          []string
 	DstAddr          []string
-	Action           string // accept, deny
-	Schedule         string
+	Action          string // accept, deny
+	SendDenyPacket  bool   // "set send-deny-packet enable" → Versa reject (sends RST)
+	Schedule        string
 	Service          []string
 	Groups           []string
 	Users            []string
@@ -147,6 +149,7 @@ type PolicyObj struct {
 	AVProfile        string
 	IPSSensor        string
 	ApplicationList  string
+	AppCategories    []int // NGFW policy-mode: set app-category 15 25
 	DNSFilterProfile string
 	SSLSSHProfile    string
 	TrafficShaper    string

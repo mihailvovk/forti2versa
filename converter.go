@@ -339,6 +339,13 @@ func (c *VersaConverter) convertURLFilteringProfiles() {
 			c.Report.AddInfo(fmt.Sprintf("Webfilter \"%s\": DNS filter categories merged into URL filtering profile", pol.WebfilterProfile))
 		}
 
+		// FortiSandbox blacklist → add malware_sites to block list as best-effort equivalent
+		if wf.SandboxBlacklist && !blockCatSet["malware_sites"] {
+			blockCats = append(blockCats, "malware_sites")
+			blockCatSet["malware_sites"] = true
+			c.Report.AddInfo(fmt.Sprintf("Webfilter \"%s\": FortiSandbox blacklist mapped to malware_sites URL category block", pol.WebfilterProfile))
+		}
+
 		// Check if profile has URL filter table patterns (even if no categories)
 		hasURLFilterTable := wf.URLFilterTable > 0 && c.parser.URLFilters[wf.URLFilterTable] != nil
 		blacklistPatterns, whitelistPatterns, monitorPatterns := c.getURLFilterPatterns(wf)
@@ -1039,6 +1046,25 @@ func (c *VersaConverter) convertPolicies() {
 			}
 		}
 
+		// NGFW policy-mode app-category match
+		if len(pol.AppCategories) > 0 {
+			var appFilters []string
+			seen := make(map[string]bool)
+			for _, catID := range pol.AppCategories {
+				if versaFilter, ok := FGAppCategoryToVersa[catID]; ok {
+					if !seen[versaFilter] {
+						appFilters = append(appFilters, versaFilter)
+						seen[versaFilter] = true
+					}
+				} else {
+					c.Report.AddWarning(fmt.Sprintf("Policy \"%s\": FortiGate app-category %d has no Versa application filter mapping", pol.Name, catID))
+				}
+			}
+			if len(appFilters) > 0 {
+				c.output = append(c.output, fmt.Sprintf("%s match application predefined-filter-list [ %s ]", rp, strings.Join(appFilters, " ")))
+			}
+		}
+
 		// Schedule
 		c.emitMatchSchedule(rp, pol)
 
@@ -1051,7 +1077,11 @@ func (c *VersaConverter) convertPolicies() {
 		// Action
 		versaAction := "allow"
 		if pol.Action != "accept" {
-			versaAction = "deny"
+			if pol.SendDenyPacket {
+				versaAction = "reject"
+			} else {
+				versaAction = "deny"
+			}
 		}
 		c.output = append(c.output, fmt.Sprintf("%s set action %s", rp, versaAction))
 

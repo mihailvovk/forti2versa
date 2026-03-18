@@ -516,6 +516,10 @@ func (p *FortiGateParser) parseWebfilterProfileBlock(lines []string, start int) 
 					}
 				case "urlfilter-table":
 					obj.URLFilterTable, _ = strconv.Atoi(vals[0])
+				case "blacklist":
+					if vals[0] == "enable" {
+						obj.SandboxBlacklist = true
+					}
 				case "category":
 					if catObj != nil {
 						catObj.ID, _ = strconv.Atoi(vals[0])
@@ -772,6 +776,16 @@ func applyPolicySet(obj *PolicyObj, line string) {
 		obj.IPSSensor = vals[0]
 	case "application-list":
 		obj.ApplicationList = vals[0]
+	case "app-category":
+		for _, v := range vals {
+			if id, err := strconv.Atoi(v); err == nil {
+				obj.AppCategories = append(obj.AppCategories, id)
+			}
+		}
+	case "send-deny-packet":
+		if vals[0] == "enable" {
+			obj.SendDenyPacket = true
+		}
 	case "dnsfilter-profile":
 		obj.DNSFilterProfile = vals[0]
 	case "ssl-ssh-profile":
